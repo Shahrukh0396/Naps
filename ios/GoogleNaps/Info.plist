@@ -34,7 +34,9 @@
 		<true/>
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string></string>
+	<string>Naps uses your location to build a nap-drive loop from where you are.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Naps uses your location to build a nap-drive loop from where you are.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

@@ -12,6 +12,8 @@
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
 		AF6BABA49C274F99A732D4CD /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
+		AA4E94870CB7478ABDB95ADA /* alarm-bell.wav in Resources */ = {isa = PBXBuildFile; fileRef = 39579678DF4A4DF8A475AF35 /* alarm-bell.wav */; };
+		678467ABDD4A4F61BA24A4C4 /* timer.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = 5C344E2B030E4B639477B763 /* timer.mp3 */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -25,6 +27,8 @@
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = GoogleNaps/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = GoogleNaps/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
+		39579678DF4A4DF8A475AF35 /* alarm-bell.wav */ = {isa = PBXFileReference; name = "alarm-bell.wav"; path = "../assets/sounds/alarm-bell.wav"; sourceTree = "<group>"; fileEncoding = undefined; lastKnownFileType = unknown; explicitFileType = undefined; includeInIndex = 0; };
+		5C344E2B030E4B639477B763 /* timer.mp3 */ = {isa = PBXFileReference; name = "timer.mp3"; path = "../assets/sounds/timer.mp3"; sourceTree = "<group>"; fileEncoding = undefined; lastKnownFileType = unknown; explicitFileType = undefined; includeInIndex = 0; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -75,6 +79,7 @@
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
 				BBD78D7AC51CEA395F1C20DB /* Pods */,
+				D9BC37847EEF40C499A8F31B /* Resources */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -97,6 +102,16 @@
 			);
 			path = Pods;
 			sourceTree = "<group>";
+		};
+		D9BC37847EEF40C499A8F31B /* Resources */ = {
+			isa = "PBXGroup";
+			children = (
+				39579678DF4A4DF8A475AF35 /* alarm-bell.wav */,
+				5C344E2B030E4B639477B763 /* timer.mp3 */,
+			);
+			name = Resources;
+			sourceTree = "<group>";
+			path = "";
 		};
 /* End PBXGroup section */
 
@@ -161,6 +176,8 @@
 				81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				AF6BABA49C274F99A732D4CD /* PrivacyInfo.xcprivacy in Resources */,
+				AA4E94870CB7478ABDB95ADA /* alarm-bell.wav in Resources */,
+				678467ABDD4A4F61BA24A4C4 /* timer.mp3 in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
