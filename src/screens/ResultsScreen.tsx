@@ -1,7 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
   Alert,
-  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -214,29 +213,18 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
     await refetchWithStops(newStops);
   };
 
-  const openInMaps = async () => {
+  const startNavigation = () => {
     if (stopLoading) return;
-    const oLat = route.origin?.lat;
-    const oLng = route.origin?.lng;
-    if (oLat == null || oLng == null) return;
-    const originParam = `${oLat},${oLng}`;
-    const waypoints =
-      route.allWaypoints && route.allWaypoints.length > 0
-        ? route.allWaypoints.map(w => `${w.lat},${w.lng}`)
-        : route.waypoint
-          ? [`${route.waypoint.lat},${route.waypoint.lng}`]
-          : [];
-    const dest =
-      route.destination && !route.isLoop ? route.destination : originParam;
-    const pathParts = [originParam, ...waypoints, dest];
-    const url = `https://www.google.com/maps/dir/${pathParts
-      .map(encodeURIComponent)
-      .join('/')}`;
-    try {
-      await Linking.openURL(url);
-    } catch {
-      Alert.alert('Could not open Maps', url);
+    if (!route.origin) {
+      Alert.alert('Location needed', 'Could not read your start point for navigation.');
+      return;
     }
+    navigation.navigate('Navigate', {
+      route,
+      durationMinutes,
+      destinationLabel: destination,
+      activeStyle,
+    });
   };
 
   const sortedVariants = variants;
@@ -262,7 +250,9 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
             </Text>
           </View>
           <View style={styles.durationPill}>
-            <Text style={styles.durationPillText}>{durationMinutes} min</Text>
+            <Text style={styles.durationPillText}>
+              {Math.round(route.durationSeconds / 60)} min
+            </Text>
           </View>
         </View>
 
@@ -377,7 +367,7 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
           )}
 
           <Pressable
-            onPress={openInMaps}
+            onPress={startNavigation}
             disabled={stopLoading}
             style={[styles.navCta, stopLoading && { opacity: 0.7 }]}>
             <Text style={styles.navCtaText}>
@@ -521,7 +511,7 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
               </View>
             ))}
 
-          {timerVisible ? (
+          {/* {timerVisible ? (
             <NapTimer
               durationMinutes={durationMinutes}
               alertAtMinutes={settings.notifyAtMinutes}
@@ -536,9 +526,9 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
                 ⏱ Show nap timer · {durationMinutes} min
               </Text>
             </Pressable>
-          )}
-
-          <SpotifyCard durationMinutes={durationMinutes} />
+          )} */}
+          
+          {/* Phase - 2  <SpotifyCard durationMinutes={durationMinutes} /> */}
 
           <Pressable
             onPress={() => navigation.navigate('MainTabs', { screen: 'Home' })}

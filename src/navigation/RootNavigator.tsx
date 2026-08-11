@@ -4,8 +4,10 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import LandingScreen from '../screens/LandingScreen';
 import PlanScreen from '../screens/PlanScreen';
 import ResultsScreen from '../screens/ResultsScreen';
+import NavigateScreen from '../screens/NavigateScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import AboutScreen from '../screens/AboutScreen';
 import SupportScreen from '../screens/SupportScreen';
@@ -26,7 +28,7 @@ function TabIcon({
   label: string;
 }) {
   return (
-    <View style={styles.tabIconWrap}>
+    <View style={[styles.tabIconWrap, focused && styles.tabIconWrapActive]}>
       <View style={[styles.tabIconBubble, focused && styles.tabIconBubbleActive]}>
         <Text style={styles.tabEmoji}>{emoji}</Text>
       </View>
@@ -37,37 +39,44 @@ function TabIcon({
 
 function MainTabs() {
   const insets = useSafeAreaInsets();
-  const bottomPad = Math.max(insets.bottom, 8);
+  const bottomPad = Math.max(insets.bottom, 10);
 
   return (
     <Tab.Navigator
       screenOptions={{
         headerShown: false,
         tabBarShowLabel: false,
+        tabBarActiveTintColor: colors.purple,
+        tabBarInactiveTintColor: colors.lavenderSoft,
         tabBarStyle: {
           position: 'absolute',
-          left: 10,
-          right: 10,
+          left: 14,
+          right: 14,
           bottom: bottomPad,
-          height: 68,
-          borderRadius: 34,
-          backgroundColor: 'rgba(255,248,240,0.94)',
+          height: 72,
+          borderRadius: 28,
+          backgroundColor: colors.cream,
           borderTopWidth: 0,
           borderWidth: 1.5,
-          borderColor: 'rgba(196,181,244,0.45)',
-          paddingTop: 16,
-          paddingBottom: 0,
+          borderColor: colors.lavenderBorder,
+          paddingTop: 10,
+          paddingBottom: 10,
+          paddingHorizontal: 8,
           justifyContent: 'center',
           alignItems: 'center',
           ...Platform.select({
             ios: {
               shadowColor: colors.purple,
-              shadowOpacity: 0.14,
-              shadowRadius: 16,
-              shadowOffset: { width: 0, height: 6 },
+              shadowOpacity: 0.12,
+              shadowRadius: 18,
+              shadowOffset: { width: 0, height: 8 },
             },
             android: { elevation: 10 },
           }),
+        },
+        tabBarItemStyle: {
+          justifyContent: 'center',
+          alignItems: 'center',
         },
       }}>
       <Tab.Screen
@@ -108,16 +117,27 @@ export default function RootNavigator() {
   return (
     <NavigationContainer>
       <Stack.Navigator
+        initialRouteName="Landing"
         screenOptions={{
           headerShown: false,
           animation: 'slide_from_right',
           contentStyle: { backgroundColor: colors.gradientMid },
         }}>
+        <Stack.Screen
+          name="Landing"
+          component={LandingScreen}
+          options={{ animation: 'fade', gestureEnabled: false }}
+        />
         <Stack.Screen name="MainTabs" component={MainTabs} />
         <Stack.Screen
           name="Results"
           component={ResultsScreen}
           options={{ animation: 'slide_from_right', gestureEnabled: true }}
+        />
+        <Stack.Screen
+          name="Navigate"
+          component={NavigateScreen}
+          options={{ animation: 'fade', gestureEnabled: false }}
         />
         <Stack.Screen name="About" component={AboutScreen} />
         <Stack.Screen name="Privacy" component={PrivacyScreen} />
@@ -130,24 +150,38 @@ const styles = StyleSheet.create({
   tabIconWrap: {
     alignItems: 'center',
     justifyContent: 'center',
-    minWidth: 72,
+    minWidth: 88,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 18,
+  },
+  tabIconWrapActive: {
+    backgroundColor: colors.lavenderSoft,
+    height: 65,
+    borderRadius: 35,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    marginTop: 14,
   },
   tabIconBubble: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'transparent',
   },
   tabIconBubbleActive: {
-    backgroundColor: 'rgba(244,200,66,0.35)',
+    backgroundColor: colors.goldSoft,
+    borderWidth: 1.5,
+    borderColor: colors.gold,
   },
-  tabEmoji: { fontSize: 18 },
+  tabEmoji: { fontSize: 17 },
   tabLabel: {
     marginTop: 2,
     fontSize: 10,
     fontWeight: '600',
+    letterSpacing: 0.2,
     color: colors.lavenderSoft,
   },
   tabLabelActive: {

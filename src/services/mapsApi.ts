@@ -1,9 +1,10 @@
 import { ROUTE_TYPE_META } from '../constants/content';
 import { calcNapMatch } from '../mocks/routes';
 import type { RouteResult, RouteStyleId, RouteVariant } from '../types/route';
-import { findRoute, RouteError } from './findRoute';
+import { findDirectRoute, findRoute } from './findRoute';
+import { RouteError } from './routeError';
 
-export { findRoute, RouteError };
+export { findRoute, findDirectRoute, RouteError };
 
 const ALL_STYLES: RouteStyleId[] = [
   'highway',

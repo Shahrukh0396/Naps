@@ -10,6 +10,7 @@ export type MainTabParamList = {
 };
 
 export type RootStackParamList = {
+  Landing: undefined;
   MainTabs: NavigatorScreenParams<MainTabParamList> | undefined;
   Results: {
     route: RouteResult;
@@ -20,9 +21,17 @@ export type RootStackParamList = {
     originLabel: string;
     preferredStyle: RouteStyleId;
   };
+  Navigate: {
+    route: RouteResult;
+    durationMinutes: number;
+    destinationLabel: string | null;
+    activeStyle: RouteStyleId;
+  };
   About: undefined;
   Privacy: undefined;
 };
+
+export type LandingScreenProps = NativeStackScreenProps<RootStackParamList, 'Landing'>;
 
 export type PlanScreenProps = CompositeScreenProps<
   BottomTabScreenProps<MainTabParamList, 'Home'>,
@@ -30,6 +39,7 @@ export type PlanScreenProps = CompositeScreenProps<
 >;
 
 export type ResultsScreenProps = NativeStackScreenProps<RootStackParamList, 'Results'>;
+export type NavigateScreenProps = NativeStackScreenProps<RootStackParamList, 'Navigate'>;
 
 export type SettingsScreenProps = CompositeScreenProps<
   BottomTabScreenProps<MainTabParamList, 'Settings'>,

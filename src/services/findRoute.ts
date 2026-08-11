@@ -1,5 +1,9 @@
 import { GOOGLE_MAPS_API_KEY } from '../config/maps';
 import type { RouteResult, RouteStyleId } from '../types/route';
+import { RouteError } from './routeError';
+import { computeTrafficAwareDrive, type TrafficAwareRoute } from './routesApi';
+
+export { RouteError } from './routeError';
 
 export interface FindRouteParams {
   origin: string;
@@ -9,15 +13,11 @@ export interface FindRouteParams {
   extraStops?: string[];
   /** Rotate waypoint bearings to generate alternate paths on refresh. */
   variation?: number;
-}
-
-export class RouteError extends Error {
-  details?: string;
-  constructor(message: string, details?: string) {
-    super(message);
-    this.name = 'RouteError';
-    this.details = details;
-  }
+  /**
+   * Floor for duration clamping (default 30).
+   * Mid-drive extend recalcs may pass a lower value so remaining nap time is respected.
+   */
+  minDurationMinutes?: number;
 }
 
 export async function findRoute(params: FindRouteParams): Promise<RouteResult> {
@@ -28,6 +28,7 @@ export async function findRoute(params: FindRouteParams): Promise<RouteResult> {
     routeTypes,
     extraStops = [],
     variation = 0,
+    minDurationMinutes = 30,
   } = params;
 
   if (!origin || !durationMinutes) {
@@ -36,8 +37,9 @@ export async function findRoute(params: FindRouteParams): Promise<RouteResult> {
 
   try {
 
-    // Enforce 30-minute minimum — shorter drives don't produce meaningful loops
-    const clampedDuration = Math.max(30, durationMinutes);
+    // Default 30-minute floor — shorter drives don't produce meaningful loops.
+    // Mid-drive extend recalcs can lower this to match remaining nap time.
+    const clampedDuration = Math.max(minDurationMinutes, durationMinutes);
 
     const apiKey = GOOGLE_MAPS_API_KEY;
     if (!apiKey) {
@@ -75,7 +77,10 @@ export async function findRoute(params: FindRouteParams): Promise<RouteResult> {
     // The clamp loop corrects from there. 15 mph caused ratio ~1.8 on first attempt.
     const avgSpeedMph    = isHighway ? 30 : fewerStops ? 22 : isScenic ? 20 : 18;
     const tortuosity     = 2.0;
-    const totalRoadMiles = (clampedDuration / 60) * avgSpeedMph;
+    // Destination drives spend the last leg going to a fixed end point, so the
+    // detour stops must start larger or the ride undershoots the nap timer.
+    const destPad        = destination ? 1.25 : 1.0;
+    const totalRoadMiles = (clampedDuration / 60) * avgSpeedMph * destPad;
     const waypointMiles  = totalRoadMiles / (3 * tortuosity);
 
     // 1° latitude ≈ 69 miles; 1° longitude ≈ 69 * cos(lat) miles
@@ -235,215 +240,225 @@ export async function findRoute(params: FindRouteParams): Promise<RouteResult> {
     const waypointLat = wp1Lat;
     const waypointLng = wp1Lng;
 
-    const avoidParts: string[] = [];
-    if (avoidHighways) avoidParts.push('highways');
-    if (avoidTolls)    avoidParts.push('tolls');
-    const avoidStr = avoidParts.length ? `&avoid=${avoidParts.join('|')}` : '';
+    // Destination for the drive — loops return to origin.
+    const endPoint = destination
+      ? destination
+      : ({ lat: originLat, lng: originLng } as const);
 
-    // ── Build Directions URL ──────────────────────────────────────────────────
-    // IMPORTANT: waypoints must be pipe-separated with literal | (not %7C).
-    // For loops we use regular stop waypoints (NOT via:) so Google is forced to
-    // actually route through each point rather than snapping them away.
-    // via: waypoints with same origin=destination collapse to zero distance.
-    // departure_time is only used for point-to-point (via: incompatibility aside,
-    // traffic data on loops is unreliable since the route shape is artificial).
+    const fetchDrive = async (
+      waypoints: string[],
+      relaxHighwayAvoid = false,
+    ): Promise<TrafficAwareRoute> =>
+      computeTrafficAwareDrive({
+        origin: { lat: originLat, lng: originLng },
+        destination: endPoint,
+        waypoints,
+        avoidHighways: relaxHighwayAvoid ? false : avoidHighways,
+        avoidTolls,
+      });
 
-    let directionsUrl: string;
+    // Always start with two nap stops so a short direct destination can't
+    // collapse the drive far below the chosen nap length.
+    const initialWaypoints = [
+      `${wp1Lat},${wp1Lng}`,
+      `${wp2Lat},${wp2Lng}`,
+      ...extraStops,
+    ];
 
-    if (destination) {
-      // Point-to-point: origin → wp1 (midpoint) → custom destination
-      const waypointsStr = [`${wp1Lat},${wp1Lng}`, ...extraStops].join('|');
-      directionsUrl = `https://maps.googleapis.com/maps/api/directions/json`
-        + `?origin=${originLat},${originLng}`
-        + `&destination=${encodeURIComponent(destination)}`
-        + `&waypoints=${waypointsStr}`
-        + `&mode=driving`
-        + avoidStr
-        + `&departure_time=now`
-        + `&traffic_model=best_guess`
-        + `&key=${apiKey}`;
-    } else {
-      // Loop: origin → wp1 → wp2 → origin
-      // Two stop waypoints at different compass bearings force a triangular circuit.
-      // A 3rd waypoint is added dynamically in the clamp loop for long drives that
-      // can't reach the target duration with just two waypoints.
-      const waypointsStr = [`${wp1Lat},${wp1Lng}`, `${wp2Lat},${wp2Lng}`, ...extraStops].join('|');
-      directionsUrl = `https://maps.googleapis.com/maps/api/directions/json`
-        + `?origin=${originLat},${originLng}`
-        + `&destination=${originLat},${originLng}`
-        + `&waypoints=${waypointsStr}`
-        + `&mode=driving`
-        + avoidStr
-        + `&key=${apiKey}`;
-    }
+    let drive = await fetchDrive(initialWaypoints);
 
     if (__DEV__) {
-      console.log('[route] url (no key):', directionsUrl.replace(String(apiKey), 'KEY'));
+      console.log(
+        `[route] initial source=${drive.source} status=${drive.status} ` +
+          `traffic=${Math.round(drive.durationSeconds / 60)}min`,
+      );
     }
 
-    let directionsRes  = await fetch(directionsUrl);
-    let directionsData = await directionsRes.json() as {
-      status: string;
-      routes: Array<{
-        overview_polyline: { points: string };
-        legs: Array<{
-          duration:            { value: number; text: string };
-          duration_in_traffic?: { value: number; text: string };
-          distance:            { value: number; text: string };
-          start_location:      { lat: number; lng: number };
-          end_location:        { lat: number; lng: number };
-          steps: Array<{
-            html_instructions: string;
-            distance:          { text: string };
-            duration:          { text: string };
-            start_location:    { lat: number; lng: number };
-            end_location:      { lat: number; lng: number };
-          }>;
-        }>;
-        summary: string;
-      }>;
-    };
+    const routeDurationSecs = (data: TrafficAwareRoute): number =>
+      data.durationSeconds;
 
     // If ZERO_RESULTS (e.g. waypoint landed in ocean/unreachable area),
-    // retry with progressively smaller radii (75%, 50%, 25%) before giving up.
-    if (!destination && directionsData.status === 'ZERO_RESULTS') {
+    // retry with progressively smaller radii before giving up.
+    if (drive.status !== 'OK') {
       for (const scale of [0.75, 0.5, 0.25]) {
-        const rw1Lat = originLat + w1dLat * scale;
-        const rw1Lng = originLng + w1dLng * scale;
-        const rw2Lat = originLat + w2dLat * scale;
-        const rw2Lng = originLng + w2dLng * scale;
-        const retryWp = [`${rw1Lat},${rw1Lng}`, `${rw2Lat},${rw2Lng}`, ...extraStops].join('|');
-        const retryUrl = `https://maps.googleapis.com/maps/api/directions/json`
-          + `?origin=${originLat},${originLng}`
-          + `&destination=${originLat},${originLng}`
-          + `&waypoints=${retryWp}`
-          + `&mode=driving`
-          + avoidStr
-          + `&key=${apiKey}`;
-        const retryRes  = await fetch(retryUrl);
-        const retryData = await retryRes.json() as typeof directionsData;
-        if (retryData.status === 'OK') {
-          directionsData = retryData;
+        const retryWp = [
+          `${originLat + w1dLat * scale},${originLng + w1dLng * scale}`,
+          `${originLat + w2dLat * scale},${originLng + w2dLng * scale}`,
+          ...extraStops,
+        ];
+        const retry = await fetchDrive(retryWp);
+        if (retry.status === 'OK') {
+          drive = retry;
           break;
         }
       }
     }
 
-    // ── Duration-clamp retry (loops only) ────────────────────────────────────
-    // If Google returns a route significantly longer/shorter than the target,
-    // scale the waypoint radius and retry. Uses cumulative scaling so each
-    // attempt builds on the previous correction.
-    // Tolerance: ±12%. Max 6 attempts, then a highway-relaxation fallback for
-    // long non-highway routes that run out of local roads.
-    if (!destination && directionsData.status === 'OK' && directionsData.routes[0]) {
+    // ── Duration-clamp retry (loops AND destination drives) ──────────────────
+    // Grow / shrink the detour until ride time is within ±8% of the nap timer.
+    // Durations use live traffic (Routes TRAFFIC_AWARE_OPTIMAL or Directions
+    // departure_time=now) so the nap length matches what Maps shows.
+    if (drive.status === 'OK' && drive.legs.length > 0) {
       const targetSecs = clampedDuration * 60;
-      const tolerance  = 0.12;
+      const tolerance = 0.08;
       let cumulativeScale = 1.0;
 
       const altBearingPairs: Array<[number, number]> = [
-        [60,  180],
-        [90,  210],
-        [30,  150],
-        [0,   135],
-        [45,  165],
+        [60, 180],
+        [90, 210],
+        [30, 150],
+        [0, 135],
+        [45, 165],
+        [120, 240],
+        [180, 300],
       ];
       let altBearingIdx = 0;
       let prevRatio = Infinity;
+      let bestData = drive;
+      let bestAbsError = Math.abs(routeDurationSecs(drive) - targetSecs);
 
-      for (let attempt = 0; attempt < 8; attempt++) {
-        const actualSecs = directionsData.routes[0].legs.reduce(
-          (sum, leg) => sum + (leg.duration_in_traffic?.value ?? leg.duration.value), 0
-        );
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const actualSecs = routeDurationSecs(drive);
         const ratio = actualSecs / targetSecs;
-        if (ratio >= (1 - tolerance) && ratio <= (1 + tolerance)) break;
+        const absError = Math.abs(actualSecs - targetSecs);
+        if (absError < bestAbsError) {
+          bestAbsError = absError;
+          bestData = drive;
+        }
+        if (ratio >= 1 - tolerance && ratio <= 1 + tolerance) {
+          if (__DEV__) {
+            console.log(
+              `[route] clamp ok attempt=${attempt + 1} actual=${Math.round(actualSecs / 60)}min target=${clampedDuration}min source=${drive.source}`,
+            );
+          }
+          break;
+        }
 
-        const improvement = Math.abs(prevRatio - ratio) / prevRatio;
-        let useB1 = b1, useB2 = b2;
+        const improvement = Math.abs(prevRatio - ratio) / Math.max(prevRatio, 1e-6);
+        let useB1 = b1,
+          useB2 = b2;
         if (attempt > 0 && improvement < 0.05 && altBearingIdx < altBearingPairs.length) {
           [useB1, useB2] = altBearingPairs[altBearingIdx++];
         }
         prevRatio = ratio;
 
-        // For long non-highway routes (not scenic) that are undershooting (ratio < 0.85),
-        // the local road network is exhausted — relax the highway avoid so Google can
-        // use arterials/expressways to fill the time. Scenic keeps its avoid to preserve
-        // the route character; it just gets a larger radius instead.
-        const effectiveAvoidStr = (avoidHighways && !isScenic && ratio < 0.85 && clampedDuration >= 60)
-          ? ''   // relax highway avoid for no-highway / fewer-lights at long durations
-          : avoidStr;
-        if (effectiveAvoidStr !== avoidStr && __DEV__) {
-          console.log(`[route] relaxing highway avoid (ratio=${ratio.toFixed(2)}, target=${clampedDuration}min)`);
+        // Undershooting on non-scenic avoid-highway styles: relax avoid so
+        // arterials can fill remaining nap time.
+        const relaxAvoid =
+          avoidHighways && !isScenic && ratio < 0.9 && clampedDuration >= 45;
+        if (relaxAvoid && __DEV__) {
+          console.log(
+            `[route] relaxing highway avoid (ratio=${ratio.toFixed(2)}, target=${clampedDuration}min)`,
+          );
         }
 
-        // Scenic routes need a higher scale ceiling — winding roads require
-        // pushing waypoints much further out to accumulate enough drive time.
-        const maxScale = isScenic ? 10.0 : 6.0;
-        cumulativeScale = Math.min(maxScale, Math.max(0.15, cumulativeScale / ratio));
+        // Destination drives need more radial room because the final leg
+        // toward the fixed end point shortens the effective detour.
+        const maxScale = destination
+          ? isScenic
+            ? 12.0
+            : 8.0
+          : isScenic
+            ? 10.0
+            : 6.0;
+        // Prefer overshooting slightly when short so the nap isn't cut early.
+        const scaleFactor = ratio < 1 ? Math.max(1.12, 1 / ratio) : 1 / ratio;
+        cumulativeScale = Math.min(
+          maxScale,
+          Math.max(0.15, cumulativeScale * scaleFactor),
+        );
         if (__DEV__) {
-          console.log(`[route] clamp attempt=${attempt + 1} ratio=${ratio.toFixed(2)} cumScale=${cumulativeScale.toFixed(3)}`);
+          console.log(
+            `[route] clamp attempt=${attempt + 1} ratio=${ratio.toFixed(2)} ` +
+              `actual=${Math.round(actualSecs / 60)}min target=${clampedDuration}min ` +
+              `cumScale=${cumulativeScale.toFixed(3)} dest=${destination ? 'yes' : 'loop'} ` +
+              `source=${drive.source}`,
+          );
         }
 
         const [cb1dLat, cb1dLng] = bearing2xy(useB1, cumulativeScale);
         const [cb2dLat, cb2dLng] = bearing2xy(useB2, cumulativeScale);
-        const cw1Lat = originLat + cb1dLat;
-        const cw1Lng = originLng + cb1dLng;
-        const cw2Lat = originLat + cb2dLat;
-        const cw2Lng = originLng + cb2dLng;
-        const clampBaseWp = [`${cw1Lat},${cw1Lng}`, `${cw2Lat},${cw2Lng}`];
-        // After 3 failed attempts on a long drive that's still undershooting,
-        // add a 3rd waypoint to create a quadrilateral loop with more road surface.
-        // Only add when ratio < 0.88 (still significantly short) to avoid overshoot.
-        if (attempt >= 3 && ratio < 0.88 && clampedDuration >= 75) {
-          // Land-biased 3rd bearing: E for highway (freeways go east), NW for scenic
-          // (Marin/hills), SW for others (south bay arterials)
-          const b3 = isHighway ? 90 : isScenic ? 315 : 240;
-          const [cb3dLat, cb3dLng] = bearing2xy(b3, cumulativeScale * 0.7);
-          clampBaseWp.push(`${originLat + cb3dLat},${originLng + cb3dLng}`);
+        const clampBaseWp = [
+          `${originLat + cb1dLat},${originLng + cb1dLng}`,
+          `${originLat + cb2dLat},${originLng + cb2dLng}`,
+        ];
+
+        // Still short of the nap: add more stops to force a longer drive.
+        if (ratio < 0.92) {
+          const extraBearings: number[] = [];
+          if (attempt >= 1 || clampedDuration >= 45) {
+            extraBearings.push(isHighway ? 90 : isScenic ? 315 : 240);
+          }
+          if (attempt >= 2 || (ratio < 0.85 && clampedDuration >= 50)) {
+            extraBearings.push((useB1 + useB2) / 2);
+          }
+          if (attempt >= 4 || (ratio < 0.8 && clampedDuration >= 60)) {
+            extraBearings.push((useB1 + 180) % 360);
+          }
+          extraBearings.forEach((bearing, idx) => {
+            const scale = cumulativeScale * (0.75 - idx * 0.08);
+            const [dY, dX] = bearing2xy(bearing, Math.max(0.35, scale));
+            clampBaseWp.push(`${originLat + dY},${originLng + dX}`);
+          });
         }
-        const clampWp  = [...clampBaseWp, ...extraStops].join('|');
-        const clampUrl = `https://maps.googleapis.com/maps/api/directions/json`
-          + `?origin=${originLat},${originLng}`
-          + `&destination=${originLat},${originLng}`
-          + `&waypoints=${clampWp}`
-          + `&mode=driving`
-          + effectiveAvoidStr
-          + `&key=${apiKey}`;
-        const clampRes  = await fetch(clampUrl);
-        const clampData = await clampRes.json() as typeof directionsData;
-        if (clampData.status === 'OK') {
-          directionsData = clampData;
-        } else {
-          break;
+
+        const clampWp = [...clampBaseWp, ...extraStops];
+        const clampData = await fetchDrive(clampWp, relaxAvoid);
+        if (clampData.status === 'OK' && clampData.legs.length > 0) {
+          drive = clampData;
+        } else if (__DEV__) {
+          console.log(`[route] clamp attempt=${attempt + 1} status=${clampData.status}`);
+          cumulativeScale = Math.max(0.4, cumulativeScale * 0.85);
         }
+      }
+
+      // Prefer the closest match to the nap timer if the final attempt drifted.
+      const finalError = Math.abs(routeDurationSecs(drive) - targetSecs);
+      if (finalError > bestAbsError) {
+        drive = bestData;
+      }
+      if (__DEV__) {
+        const finalMins = Math.round(routeDurationSecs(drive) / 60);
+        console.log(
+          `[route] final duration=${finalMins}min target=${clampedDuration}min source=${drive.source}`,
+        );
       }
     }
 
-    if (directionsData.status !== 'OK' || !directionsData.routes[0]) {
-      const isNotEnabled = directionsData.status === 'REQUEST_DENIED';
+    if (drive.status !== 'OK' || !drive.legs.length) {
+      const isNotEnabled =
+        drive.status === 'REQUEST_DENIED' || drive.status === 'PERMISSION_DENIED';
       throw new RouteError(
         isNotEnabled
-          ? 'Directions API not enabled. Please enable it in Google Cloud Console → APIs & Services.'
+          ? 'Directions / Routes API not enabled. Enable them in Google Cloud Console → APIs & Services.'
           : 'Could not calculate route. Try a different address or route type.',
-        directionsData.status,
+        drive.status,
       );
     }
 
-    const route = directionsData.routes[0];
-    const totalDurationSecs = route.legs.reduce(
-      (sum, leg) => sum + (leg.duration_in_traffic?.value ?? leg.duration.value),
-      0,
-    );
+    const totalDurationSecs = drive.durationSeconds;
+    const snappedWaypoints = drive.legs.slice(0, -1).map(leg => ({
+      lat: leg.end.lat,
+      lng: leg.end.lng,
+    }));
+    const primaryWaypoint = snappedWaypoints[0] ?? {
+      lat: waypointLat,
+      lng: waypointLng,
+    };
 
     // ── Street View snapshot ──────────────────────────────────────────────────
     let streetViewUrl: string | null = null;
     try {
-      const allSteps = route.legs.flatMap((leg) => leg.steps);
-      const previewStep = allSteps[Math.floor(allSteps.length * 0.4)] ?? allSteps[0];
-      const svLat = previewStep?.start_location.lat ?? waypointLat;
-      const svLng = previewStep?.start_location.lng ?? waypointLng;
+      const allSteps = drive.legs.flatMap(leg => leg.steps);
+      const previewStep =
+        allSteps[Math.floor(allSteps.length * 0.4)] ?? allSteps[0];
+      const svLat = previewStep?.start.lat ?? primaryWaypoint.lat;
+      const svLng = previewStep?.start.lng ?? primaryWaypoint.lng;
 
-      const metaRes  = await fetch(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${svLat},${svLng}&radius=200&key=${apiKey}`);
-      const metaData = await metaRes.json() as { status: string };
+      const metaRes = await fetch(
+        `https://maps.googleapis.com/maps/api/streetview/metadata?location=${svLat},${svLng}&radius=200&key=${apiKey}`,
+      );
+      const metaData = (await metaRes.json()) as { status: string };
 
       if (metaData.status === 'OK') {
         streetViewUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x200&location=${svLat},${svLng}&fov=90&pitch=0&radius=200&key=${apiKey}`;
@@ -452,29 +467,35 @@ export async function findRoute(params: FindRouteParams): Promise<RouteResult> {
       // Street View is optional
     }
 
+    if (__DEV__) {
+      const mins = Math.round(totalDurationSecs / 60);
+      const gap = mins - clampedDuration;
+      console.log(
+        `[route] done style=${routeType} duration=${mins}min target=${clampedDuration}min ` +
+          `gap=${gap >= 0 ? '+' : ''}${gap} stops=${snappedWaypoints.length} source=${drive.source}`,
+      );
+    }
+
     return {
-      polyline: route.overview_polyline.points,
+      polyline: drive.polyline,
       durationSeconds: totalDurationSecs,
       durationText: `${Math.round(totalDurationSecs / 60)} min`,
-      summary: route.summary,
+      summary: drive.summary,
       isLoop: !destination,
       destination,
       streetViewUrl,
       origin: { lat: originLat, lng: originLng },
-      waypoint: { lat: waypointLat, lng: waypointLng },
-      allWaypoints: route.legs.slice(0, -1).map(leg => ({
-        lat: leg.end_location.lat,
-        lng: leg.end_location.lng,
-      })),
+      waypoint: primaryWaypoint,
+      allWaypoints: snappedWaypoints,
       extraStops,
-      legs: route.legs.map(leg => ({
-        distance: leg.distance.text,
-        duration: (leg.duration_in_traffic ?? leg.duration).text,
+      legs: drive.legs.map(leg => ({
+        distance: leg.distanceText,
+        duration: leg.durationText,
         steps: leg.steps.map(s => ({
-          instruction: s.html_instructions.replace(/<[^>]+>/g, ''),
-          distance: s.distance.text,
-          duration: s.duration.text,
-          endLocation: { lat: s.end_location.lat, lng: s.end_location.lng },
+          instruction: s.instruction,
+          distance: s.distanceText,
+          duration: s.durationText,
+          endLocation: { lat: s.end.lat, lng: s.end.lng },
         })),
       })),
     };
@@ -482,5 +503,72 @@ export async function findRoute(params: FindRouteParams): Promise<RouteResult> {
     if (err instanceof RouteError) throw err;
     console.error('maps.route.error', err);
     throw new RouteError('Failed to calculate route');
+  }
+}
+
+export interface FindDirectRouteParams {
+  origin: string;
+  destination: string;
+  /** Prefer local roads when the nap used a non-highway style. */
+  avoidHighways?: boolean;
+}
+
+/**
+ * Straight A→B drive with no nap waypoints or extra stops.
+ * Used when the nap timer ends so the driver heads directly home / to destination.
+ */
+export async function findDirectRoute(
+  params: FindDirectRouteParams,
+): Promise<RouteResult> {
+  const { origin, destination, avoidHighways = false } = params;
+
+  if (!origin || !destination) {
+    throw new RouteError('origin and destination are required');
+  }
+
+  try {
+    const drive = await computeTrafficAwareDrive({
+      origin,
+      destination,
+      avoidHighways,
+    });
+
+    if (drive.status !== 'OK' || !drive.legs.length) {
+      throw new RouteError(
+        'Could not calculate a direct route to your destination.',
+        drive.status,
+      );
+    }
+
+    const originPoint = drive.legs[0]?.start ?? { lat: 0, lng: 0 };
+    const end = drive.legs[drive.legs.length - 1]?.end ?? originPoint;
+
+    return {
+      polyline: drive.polyline,
+      durationSeconds: drive.durationSeconds,
+      durationText: `${Math.round(drive.durationSeconds / 60)} min`,
+      summary: drive.summary || 'Direct to destination',
+      isLoop: false,
+      destination,
+      streetViewUrl: null,
+      origin: originPoint,
+      waypoint: { lat: end.lat, lng: end.lng },
+      allWaypoints: [],
+      extraStops: [],
+      legs: drive.legs.map(leg => ({
+        distance: leg.distanceText,
+        duration: leg.durationText,
+        steps: leg.steps.map(s => ({
+          instruction: s.instruction,
+          distance: s.distanceText,
+          duration: s.durationText,
+          endLocation: { lat: s.end.lat, lng: s.end.lng },
+        })),
+      })),
+    };
+  } catch (err) {
+    if (err instanceof RouteError) throw err;
+    console.error('maps.directRoute.error', err);
+    throw new RouteError('Failed to calculate direct route');
   }
 }

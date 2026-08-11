@@ -6,8 +6,11 @@ import {
   View,
 } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
+import ExtendTimeSheet from './ExtendTimeSheet';
 import { colors } from '../theme/colors';
 import { startNapAlert, stopNapAlert } from '../utils/napAlert';
+
+const EXTEND_MINUTES = 5;
 
 interface NapTimerProps {
   durationMinutes: number;
@@ -15,6 +18,20 @@ interface NapTimerProps {
   alertAtMinutes: number;
   alertsEnabled: boolean;
   onDismiss: () => void;
+  /** Compact floating style for overlaying a full-screen map. */
+  variant?: 'card' | 'overlay';
+  /** Start counting down immediately (navigation mode). */
+  autoStart?: boolean;
+  /** Default minutes selected in the extend sheet. */
+  extendByMinutes?: number;
+  /** Fired after Extend updates the timer — use to recalculate the nap route. */
+  onExtend?: (info: {
+    addedMinutes: number;
+    totalMinutes: number;
+    secondsLeft: number;
+  }) => void;
+  /** Fired once when the countdown reaches 0:00. */
+  onComplete?: () => void;
 }
 
 function formatTime(seconds: number): string {
@@ -71,16 +88,24 @@ export default function NapTimer({
   alertAtMinutes,
   alertsEnabled,
   onDismiss,
+  variant = 'card',
+  autoStart = false,
+  extendByMinutes = EXTEND_MINUTES,
+  onExtend,
+  onComplete,
 }: NapTimerProps) {
-  const totalSeconds = durationMinutes * 60;
-  const [secondsLeft, setSecondsLeft] = useState(totalSeconds);
-  const [running, setRunning] = useState(false);
+  const [totalSeconds, setTotalSeconds] = useState(durationMinutes * 60);
+  const [secondsLeft, setSecondsLeft] = useState(durationMinutes * 60);
+  const [running, setRunning] = useState(autoStart);
   const [alertFired, setAlertFired] = useState(false);
   const [alertDismissed, setAlertDismissed] = useState(false);
   const [endAlertFired, setEndAlertFired] = useState(false);
   const [localAlertsEnabled, setLocalAlertsEnabled] = useState(alertsEnabled);
+  const [extendOpen, setExtendOpen] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const alertingRef = useRef(false);
+  const seededDurationRef = useRef(durationMinutes);
+  const completeFiredRef = useRef(false);
 
   const silenceAlert = useCallback(() => {
     alertingRef.current = false;
@@ -90,7 +115,6 @@ export default function NapTimer({
   const fireAlert = useCallback(
     async (withSound: boolean) => {
       if (!localAlertsEnabled) return;
-      // If already ringing with sound, don't restart; if upgrading to sound, restart
       if (alertingRef.current && withSound) {
         silenceAlert();
       } else if (alertingRef.current) {
@@ -102,14 +126,26 @@ export default function NapTimer({
     [localAlertsEnabled, silenceAlert],
   );
 
+  // Only reset when the planned nap duration prop changes (not on Extend).
   useEffect(() => {
-    setSecondsLeft(durationMinutes * 60);
-    setRunning(false);
+    if (seededDurationRef.current === durationMinutes) return;
+    seededDurationRef.current = durationMinutes;
+    const next = durationMinutes * 60;
+    setTotalSeconds(next);
+    setSecondsLeft(next);
+    setRunning(autoStart);
     setAlertFired(false);
     setAlertDismissed(false);
     setEndAlertFired(false);
+    completeFiredRef.current = false;
     silenceAlert();
-  }, [durationMinutes, silenceAlert]);
+  }, [durationMinutes, autoStart, silenceAlert]);
+
+  useEffect(() => {
+    if (secondsLeft !== 0 || completeFiredRef.current) return;
+    completeFiredRef.current = true;
+    onComplete?.();
+  }, [secondsLeft, onComplete]);
 
   useEffect(() => {
     return () => {
@@ -138,7 +174,6 @@ export default function NapTimer({
     };
   }, [running]);
 
-  // Warning alert: N minutes before end — haptic only
   useEffect(() => {
     if (!localAlertsEnabled || alertFired || alertDismissed) return;
     const threshold = Math.max(0, alertAtMinutes) * 60;
@@ -157,7 +192,6 @@ export default function NapTimer({
     fireAlert,
   ]);
 
-  // End alert: when timer hits 0 — ring res/raw/timer.mp3 + haptic
   useEffect(() => {
     if (!localAlertsEnabled || endAlertFired) return;
     if (secondsLeft === 0) {
@@ -168,7 +202,6 @@ export default function NapTimer({
     }
   }, [secondsLeft, localAlertsEnabled, endAlertFired, fireAlert]);
 
-  // Stop ringing if user disables alerts
   useEffect(() => {
     if (!localAlertsEnabled) silenceAlert();
   }, [localAlertsEnabled, silenceAlert]);
@@ -184,15 +217,51 @@ export default function NapTimer({
     setAlertFired(false);
     setAlertDismissed(false);
     setEndAlertFired(false);
+    completeFiredRef.current = false;
     silenceAlert();
   }, [totalSeconds, silenceAlert]);
+
+  const applyExtend = useCallback(
+    (addedMinutes: number) => {
+      const mins = Math.max(1, addedMinutes);
+      const addSecs = mins * 60;
+      const nextTotal = totalSeconds + addSecs;
+      const nextLeft = secondsLeft + addSecs;
+      setTotalSeconds(nextTotal);
+      setSecondsLeft(nextLeft);
+      setEndAlertFired(false);
+      setAlertFired(false);
+      setAlertDismissed(false);
+      completeFiredRef.current = false;
+      silenceAlert();
+      if (!running) setRunning(true);
+      onExtend?.({
+        addedMinutes: mins,
+        totalMinutes: Math.round(nextTotal / 60),
+        secondsLeft: nextLeft,
+      });
+    },
+    [onExtend, running, secondsLeft, silenceAlert, totalSeconds],
+  );
+
+  const handleOpenExtend = useCallback(() => {
+    setExtendOpen(true);
+  }, []);
+
+  const handleConfirmExtend = useCallback(
+    (minutes: number) => {
+      setExtendOpen(false);
+      applyExtend(minutes);
+    },
+    [applyExtend],
+  );
 
   const handleDismissTimer = useCallback(() => {
     silenceAlert();
     onDismiss();
   }, [onDismiss, silenceAlert]);
 
-  const progress = secondsLeft / totalSeconds;
+  const progress = totalSeconds > 0 ? secondsLeft / totalSeconds : 0;
   const warnThreshold = Math.max(0, alertAtMinutes) * 60;
   const isNearEnd =
     alertAtMinutes > 0 && secondsLeft <= warnThreshold && secondsLeft > 0;
@@ -205,11 +274,13 @@ export default function NapTimer({
       : colors.lavender;
   const showAlert = alertFired && !alertDismissed && localAlertsEnabled;
   const isRinging = showAlert;
+  const isOverlay = variant === 'overlay';
+  const plannedMinutes = Math.round(totalSeconds / 60);
 
   return (
     <View
       style={[
-        styles.card,
+        isOverlay ? styles.overlayCard : styles.card,
         {
           borderColor: isDone
             ? 'rgba(229,115,115,0.55)'
@@ -238,7 +309,7 @@ export default function NapTimer({
                   { color: isDone ? '#C62828' : colors.warning },
                 ]}>
                 {isDone
-                  ? 'Nap time is up — head home now!'
+                  ? 'Nap time is up — head to your destination!'
                   : `${minutesLeft} min left — start heading back`}
               </Text>
               <Text style={styles.alertSub}>
@@ -257,13 +328,13 @@ export default function NapTimer({
         </View>
       )}
 
-      <View style={styles.body}>
+      <View style={[styles.body, isOverlay && styles.bodyOverlay]}>
         <View style={styles.headerRow}>
           <View>
             <Text style={styles.title}>Nap timer</Text>
             <Text style={styles.subtitle}>
               {isDone
-                ? 'Time to head home!'
+                ? 'Time to head to your destination!'
                 : running
                   ? isNearEnd
                     ? 'Almost done — wrap up the drive'
@@ -292,15 +363,21 @@ export default function NapTimer({
                 {localAlertsEnabled ? '🔔' : '🔕'}
               </Text>
             </Pressable>
-            <Pressable onPress={handleDismissTimer} style={styles.iconBtn}>
-              <Text style={{ fontSize: 13, color: colors.lavender }}>✕</Text>
-            </Pressable>
+            {!isOverlay && (
+              <Pressable onPress={handleDismissTimer} style={styles.iconBtn}>
+                <Text style={{ fontSize: 13, color: colors.lavender }}>✕</Text>
+              </Pressable>
+            )}
           </View>
         </View>
 
         <View style={styles.mainRow}>
-          <View style={styles.ringWrap}>
-            <ProgressRing radius={40} progress={progress} color={ringColor} />
+          <View style={[styles.ringWrap, isOverlay && styles.ringWrapSm]}>
+            <ProgressRing
+              radius={isOverlay ? 34 : 40}
+              progress={progress}
+              color={ringColor}
+            />
             <View style={styles.ringCenter}>
               <Text
                 style={[
@@ -311,7 +388,7 @@ export default function NapTimer({
                       : isNearEnd
                         ? colors.warning
                         : colors.purple,
-                    fontSize: isDone ? 14 : 17,
+                    fontSize: isDone ? 14 : isOverlay ? 15 : 17,
                   },
                 ]}>
                 {isDone ? '🌙' : formatTime(secondsLeft)}
@@ -333,7 +410,7 @@ export default function NapTimer({
               />
             </View>
             <Text style={styles.durationHint}>
-              {durationMinutes} min nap · {Math.round((1 - progress) * 100)}%
+              {plannedMinutes} min nap · {Math.round((1 - progress) * 100)}%
               complete
             </Text>
             <View style={styles.controlsRow}>
@@ -361,14 +438,22 @@ export default function NapTimer({
                   {running ? '⏸ Pause' : '▶ Start'}
                 </Text>
               </Pressable>
-              <Pressable onPress={handleReset} style={styles.resetBtn}>
-                <Text style={{ fontSize: 14, color: colors.lavenderSoft }}>↻</Text>
+              <Pressable
+                onPress={handleOpenExtend}
+                style={styles.extendBtn}
+                accessibilityLabel="Choose how long to extend the nap">
+                <Text style={styles.extendBtnText}>Extend…</Text>
               </Pressable>
+              {!isOverlay && (
+                <Pressable onPress={handleReset} style={styles.resetBtn}>
+                  <Text style={{ fontSize: 14, color: colors.lavenderSoft }}>↻</Text>
+                </Pressable>
+              )}
             </View>
           </View>
         </View>
 
-        {localAlertsEnabled && !isDone && (
+        {localAlertsEnabled && !isDone && !isOverlay && (
           <Text style={styles.alertHint}>
             {alertAtMinutes === 0
               ? 'timer.mp3 + haptic when nap ends'
@@ -376,6 +461,16 @@ export default function NapTimer({
           </Text>
         )}
       </View>
+
+      <ExtendTimeSheet
+        visible={extendOpen}
+        defaultMinutes={extendByMinutes}
+        currentTotalMinutes={plannedMinutes}
+        currentSecondsLeft={secondsLeft}
+        willRecalculateRoute={!!onExtend}
+        onCancel={() => setExtendOpen(false)}
+        onConfirm={handleConfirmExtend}
+      />
     </View>
   );
 }
@@ -391,6 +486,17 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 4 },
     elevation: 3,
+  },
+  overlayCard: {
+    backgroundColor: 'rgba(255,248,240,0.96)',
+    borderRadius: 22,
+    borderWidth: 1.5,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: 0.28,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 12,
   },
   cardAlerting: {
     shadowColor: '#C62828',
@@ -430,6 +536,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   body: { paddingHorizontal: 20, paddingVertical: 16 },
+  bodyOverlay: { paddingHorizontal: 16, paddingVertical: 14 },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -457,6 +564,7 @@ const styles = StyleSheet.create({
   },
   mainRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   ringWrap: { width: 80, height: 80 },
+  ringWrapSm: { width: 68, height: 68 },
   ringCenter: {
     ...StyleSheet.absoluteFill,
     alignItems: 'center',
@@ -478,13 +586,24 @@ const styles = StyleSheet.create({
     color: colors.lavenderSoft,
     marginBottom: 8,
   },
-  controlsRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  controlsRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   playBtn: {
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 999,
   },
   playBtnText: { fontSize: 12, fontWeight: '700' },
+  extendBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: colors.gold,
+  },
+  extendBtnText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: colors.purple,
+  },
   resetBtn: {
     width: 32,
     height: 32,

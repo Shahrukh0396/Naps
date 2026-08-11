@@ -9,6 +9,12 @@ export const DURATIONS = [
   { label: '2 hr', value: 120 },
 ] as const;
 
+/** Quick chips + wheel values for extending an active nap. */
+export const EXTEND_PRESETS = [5, 10, 15, 20, 30] as const;
+export const EXTEND_WHEEL_MINUTES = [
+  5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60,
+] as const;
+
 export const ROUTE_TYPES: Array<{
   id: RouteStyleId;
   emoji: string;
@@ -49,7 +55,7 @@ export const SUPPORT_FAQS = [
   },
   {
     q: 'Can I open the route in Google Maps?',
-    a: 'Yes. After you find a route, tap Start Navigation to open the full drive path in Google Maps.',
+    a: 'Yes. After you find a route, tap Start Navigation to open the nap drive in Google Maps. A nap timer with Extend stays on the map when you return to the app — pick how many minutes to add and the route updates.',
   },
   {
     q: 'What is the nap timer for?',

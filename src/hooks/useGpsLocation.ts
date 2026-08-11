@@ -44,11 +44,11 @@ export function useGpsLocation() {
         err => {
           setStatus('error');
           if (err.code === 1) {
-            setErrorMsg('Location access denied — please allow location for Naps.');
+            setErrorMsg('Location access denied — enable it in Settings to plan a nap route.');
           } else if (err.code === 2) {
-            setErrorMsg('Location unavailable. Try entering your address instead.');
+            setErrorMsg('Location unavailable. Check that Location Services are on, then retry.');
           } else {
-            setErrorMsg('Location timed out. Try entering your address instead.');
+            setErrorMsg('Location timed out. Move somewhere with a clearer signal and retry.');
           }
         },
         {

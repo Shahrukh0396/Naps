@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -10,14 +10,25 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import GradientBackground from '../components/GradientBackground';
+import NapMap from '../components/NapMap';
 import PlacesAutocomplete from '../components/PlacesAutocomplete';
 import { DURATIONS, ROUTE_TYPES } from '../constants/content';
 import { useNapSettings } from '../context/SettingsContext';
 import { useGpsLocation } from '../hooks/useGpsLocation';
+import { geocodeAddress, reverseGeocode } from '../services/geocode';
 import { findRouteSuggestions, RouteError } from '../services/mapsApi';
 import type { RouteStyleId } from '../types/route';
 import { colors } from '../theme/colors';
 import type { PlanScreenProps } from '../navigation/types';
+
+type EndMode = 'current' | 'search' | 'map';
+type LatLng = { lat: number; lng: number };
+
+const END_OPTIONS: Array<{ id: EndMode; label: string }> = [
+  { id: 'current', label: 'Current' },
+  { id: 'search', label: 'Search' },
+  { id: 'map', label: 'Map' },
+];
 
 export default function PlanScreen({ navigation }: PlanScreenProps) {
   const insets = useSafeAreaInsets();
@@ -32,24 +43,25 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
   const [selectedDuration, setSelectedDuration] = useState(settings.defaultDuration || 30);
   const [useCustom, setUseCustom] = useState(false);
   const [customMinutes, setCustomMinutes] = useState('');
-  const [locationMode, setLocationMode] = useState<'gps' | 'custom'>(
-    settings.homeAddress ? 'custom' : 'gps',
-  );
-  const [customLocation, setCustomLocation] = useState(settings.homeAddress || '');
-  const [endMode, setEndMode] = useState<'loop' | 'custom'>('loop');
-  const [customEnd, setCustomEnd] = useState('');
+  const [endMode, setEndMode] = useState<EndMode>('current');
+  const [endQuery, setEndQuery] = useState('');
+  const [endLocation, setEndLocation] = useState<LatLng | null>(null);
+  const [endLabel, setEndLabel] = useState<string | null>(null);
+  const [pendingEnd, setPendingEnd] = useState<{
+    location: LatLng;
+    label: string | null;
+  } | null>(null);
+  const [endResolving, setEndResolving] = useState(false);
   const [activeRoute, setActiveRoute] = useState<RouteStyleId>(
     settings.defaultRouteType || 'highway',
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pendingMapPickId = useRef(0);
 
   useEffect(() => {
-    if (settings.homeAddress) {
-      setCustomLocation(settings.homeAddress);
-      setLocationMode('custom');
-    }
-  }, [settings.homeAddress]);
+    detectGps();
+  }, [detectGps]);
 
   useEffect(() => {
     setSelectedDuration(settings.defaultDuration || 30);
@@ -60,13 +72,101 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
     ? Math.max(30, parseInt(customMinutes || '0', 10) || 30)
     : selectedDuration;
 
+  const clearCustomEnd = () => {
+    setEndQuery('');
+    setEndLocation(null);
+    setEndLabel(null);
+    setPendingEnd(null);
+    setEndResolving(false);
+  };
+
+  const switchEndMode = (mode: EndMode) => {
+    setEndMode(mode);
+    setError(null);
+    setPendingEnd(null);
+    if (mode === 'current') {
+      clearCustomEnd();
+    }
+  };
+
+  const applyEndFromSearch = async (address: string) => {
+    setEndQuery(address);
+    setPendingEnd(null);
+    setEndResolving(true);
+    setError(null);
+    try {
+      const result = await geocodeAddress(address);
+      if (!result) {
+        setEndLocation(null);
+        setEndLabel(null);
+        setError('Could not find that address. Try another search.');
+        return;
+      }
+      setEndLocation(result.location);
+      setEndLabel(result.label);
+    } catch {
+      setError('Could not look up that address. Try again.');
+    } finally {
+      setEndResolving(false);
+    }
+  };
+
+  const proposeEndFromMap = async (coord: LatLng) => {
+    const pickId = ++pendingMapPickId.current;
+    setPendingEnd({ location: coord, label: null });
+    setEndResolving(true);
+    setError(null);
+    try {
+      const label = await reverseGeocode(coord.lat, coord.lng);
+      if (pickId !== pendingMapPickId.current) return;
+      const fallback = `${coord.lat.toFixed(5)}, ${coord.lng.toFixed(5)}`;
+      setPendingEnd({ location: coord, label: label || fallback });
+    } catch {
+      if (pickId !== pendingMapPickId.current) return;
+      const fallback = `${coord.lat.toFixed(5)}, ${coord.lng.toFixed(5)}`;
+      setPendingEnd({ location: coord, label: fallback });
+    } finally {
+      if (pickId === pendingMapPickId.current) setEndResolving(false);
+    }
+  };
+
+  const confirmPendingEnd = () => {
+    if (!pendingEnd?.label || endResolving) return;
+    setEndLocation(pendingEnd.location);
+    setEndLabel(pendingEnd.label);
+    setEndQuery(pendingEnd.label);
+    setPendingEnd(null);
+    setError(null);
+  };
+
+  const cancelPendingEnd = () => {
+    pendingMapPickId.current += 1;
+    setPendingEnd(null);
+    setEndResolving(false);
+  };
+
   const handleFindRoute = async () => {
-    if (locationMode === 'gps' && !gpsLocation) {
-      setError('Location not detected yet. Tap Use my location or enter an address.');
+    if (!gpsLocation) {
+      setError(
+        gpsStatus === 'error'
+          ? gpsErrorMsg || 'Enable location permission to find a route.'
+          : 'Waiting for your location. Allow access when prompted, then try again.',
+      );
+      if (gpsStatus !== 'detecting') detectGps();
       return;
     }
-    if (locationMode === 'custom' && !customLocation.trim()) {
-      setError('Please enter a starting address.');
+
+    if (endMode === 'map' && pendingEnd) {
+      setError('Confirm the ending point before finding a route.');
+      return;
+    }
+
+    if (endMode !== 'current' && !endLocation) {
+      setError(
+        endMode === 'search'
+          ? 'Search and select an ending address.'
+          : 'Tap the map and confirm your ending point.',
+      );
       return;
     }
 
@@ -74,11 +174,10 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
     setError(null);
     try {
       const destination =
-        endMode === 'custom' && customEnd.trim() ? customEnd.trim() : null;
-      const originStr =
-        locationMode === 'gps' && gpsLocation
-          ? `${gpsLocation.lat},${gpsLocation.lng}`
-          : customLocation.trim();
+        endMode === 'current' || !endLocation
+          ? null
+          : `${endLocation.lat},${endLocation.lng}`;
+      const originStr = `${gpsLocation.lat},${gpsLocation.lng}`;
 
       const { variants, primary, activeStyle } = await findRouteSuggestions({
         origin: originStr,
@@ -94,12 +193,9 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
         variants,
         activeStyle,
         durationMinutes: activeDuration,
-        destination,
+        destination: destination ? endLabel || destination : null,
         preferredStyle: activeRoute,
-        originLabel:
-          locationMode === 'gps' && gpsLocation
-            ? `${gpsLocation.lat.toFixed(4)}, ${gpsLocation.lng.toFixed(4)}`
-            : customLocation.trim(),
+        originLabel: 'Current location',
       });
     } catch (err) {
       setError(
@@ -111,6 +207,12 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
       setLoading(false);
     }
   };
+
+  const mapDestination =
+    endMode === 'current'
+      ? null
+      : pendingEnd?.location ?? (endMode === 'map' || endMode === 'search' ? endLocation : null);
+  const mapSelectable = endMode === 'map' && !!gpsLocation;
 
   return (
     <GradientBackground style={styles.flex}>
@@ -142,88 +244,162 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
         {/* Starting point */}
         <View style={styles.card}>
           <Text style={styles.label}>Starting point</Text>
+          <Text style={styles.subhint}>Always your current location</Text>
+
+          {gpsStatus === 'found' && gpsLocation ? (
+            <View style={styles.mapBlock}>
+              <NapMap
+                origin={gpsLocation}
+                route={null}
+                destination={mapDestination}
+                preview
+                selectable={mapSelectable}
+                onSelectCoordinate={proposeEndFromMap}
+                height={endMode === 'map' ? 260 : 210}
+              />
+              <View style={styles.locationRow}>
+                <View style={styles.readyPill}>
+                  <Text style={styles.readyText}>✓ Location ready</Text>
+                </View>
+                <Pressable onPress={detectGps} hitSlop={8}>
+                  <Text style={styles.refreshLink}>Refresh</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : (
+            <Pressable
+              onPress={() => {
+                if (gpsStatus !== 'detecting') detectGps();
+              }}
+              style={styles.gpsBox}>
+              {gpsStatus === 'detecting' ? (
+                <View style={styles.gpsDetecting}>
+                  <ActivityIndicator color={colors.purple} />
+                  <Text style={styles.gpsText}>Detecting your location…</Text>
+                </View>
+              ) : (
+                <Text style={styles.gpsText}>
+                  {gpsStatus === 'error'
+                    ? gpsErrorMsg || 'Could not detect location — tap to retry'
+                    : 'Tap to enable location and set your start'}
+                </Text>
+              )}
+            </Pressable>
+          )}
+        </View>
+
+        {/* Ending point */}
+        <View style={styles.card}>
+          <Text style={styles.label}>Ending point</Text>
+          <Text style={styles.subhint}>
+            Current location, search an address, or pick on the map
+          </Text>
+
           <View style={styles.toggleRow}>
-            {(['gps', 'custom'] as const).map(mode => (
+            {END_OPTIONS.map(opt => (
               <Pressable
-                key={mode}
-                onPress={() => {
-                  setLocationMode(mode);
-                  if (mode === 'gps' && gpsStatus !== 'found' && gpsStatus !== 'detecting') {
-                    detectGps();
-                  }
-                }}
+                key={opt.id}
+                onPress={() => switchEndMode(opt.id)}
                 style={[
                   styles.toggleBtn,
-                  locationMode === mode && styles.toggleBtnActive,
+                  endMode === opt.id && styles.toggleBtnActive,
                 ]}>
                 <Text
                   style={[
                     styles.toggleText,
-                    locationMode === mode && styles.toggleTextActive,
+                    endMode === opt.id && styles.toggleTextActive,
                   ]}>
-                  {mode === 'gps' ? '📍 Use my location' : '📝 Enter address'}
+                  {opt.label}
                 </Text>
               </Pressable>
             ))}
           </View>
 
-          {locationMode === 'custom' ? (
-            <PlacesAutocomplete
-              value={customLocation}
-              onChange={setCustomLocation}
-              onSelect={setCustomLocation}
-              placeholder="123 Main St, Your City…"
-              icon="📍"
-            />
-          ) : (
-            <Pressable
-              onPress={() => {
-                if (gpsStatus !== 'detecting' && gpsStatus !== 'found') detectGps();
-              }}
-              style={styles.gpsBox}>
-              <Text style={styles.gpsText}>
-                {gpsStatus === 'detecting' && 'Detecting your location…'}
-                {gpsStatus === 'found' &&
-                  gpsLocation &&
-                  `${gpsLocation.lat.toFixed(4)}, ${gpsLocation.lng.toFixed(4)}`}
-                    {gpsStatus === 'error' && (gpsErrorMsg || 'Could not detect location — tap to retry')}
-                    {gpsStatus === 'idle' && 'Tap to detect your location'}
-              </Text>
-              {gpsStatus === 'found' && (
-                <View style={styles.readyPill}>
-                  <Text style={styles.readyText}>✓ Ready</Text>
-                </View>
-              )}
-            </Pressable>
+          {endMode === 'current' && (
+            <Text style={styles.hint}>
+              Route loops back to your current location
+            </Text>
           )}
 
-          <View style={styles.divider} />
-          <Pressable
-            onPress={() => setEndMode(endMode === 'loop' ? 'custom' : 'loop')}
-            style={styles.checkRow}>
-            <View
-              style={[
-                styles.checkbox,
-                endMode === 'custom' && styles.checkboxOn,
-              ]}>
-              {endMode === 'custom' && <Text style={styles.checkMark}>✓</Text>}
-            </View>
-            <Text style={styles.checkLabel}>Different ending point</Text>
-          </Pressable>
-          {endMode === 'custom' && (
-            <View style={{ marginTop: 10, zIndex: 30 }}>
+          {endMode === 'search' && (
+            <View style={{ zIndex: 30 }}>
               <PlacesAutocomplete
-                value={customEnd}
-                onChange={setCustomEnd}
-                onSelect={setCustomEnd}
+                value={endQuery}
+                onChange={text => {
+                  setEndQuery(text);
+                  setEndLocation(null);
+                  setEndLabel(null);
+                }}
+                onSelect={applyEndFromSearch}
                 placeholder="Search end destination…"
                 variant="gold"
                 icon="🏁"
                 autoFocus
               />
-              <Text style={styles.hint}>
-                Type to search — route will end here instead of looping back
-              </Text>
+              {endResolving ? (
+                <View style={styles.endStatusRow}>
+                  <ActivityIndicator size="small" color={colors.purple} />
+                  <Text style={styles.hint}>Looking up address…</Text>
+                </View>
+              ) : endLabel ? (
+                <Text style={styles.endReady}>✓ {endLabel}</Text>
+              ) : (
+                <Text style={styles.hint}>
+                  Type to search — route will end at the selected place
+                </Text>
+              )}
+            </View>
+          )}
+
+          {endMode === 'map' && (
+            <View>
+              {!gpsLocation ? (
+                <Text style={styles.hint}>
+                  Enable location first, then tap the map above to set the end
+                </Text>
+              ) : pendingEnd ? (
+                <View style={styles.verifyBox}>
+                  {endResolving || !pendingEnd.label ? (
+                    <View style={styles.endStatusRow}>
+                      <ActivityIndicator size="small" color={colors.purple} />
+                      <Text style={styles.hint}>Verifying place…</Text>
+                    </View>
+                  ) : (
+                    <>
+                      <Text style={styles.verifyLabel}>Verify ending point</Text>
+                      <Text style={styles.verifyAddress}>{pendingEnd.label}</Text>
+                      <View style={styles.verifyActions}>
+                        <Pressable
+                          onPress={cancelPendingEnd}
+                          style={styles.verifyCancelBtn}>
+                          <Text style={styles.verifyCancelText}>Cancel</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={confirmPendingEnd}
+                          style={styles.verifyConfirmBtn}>
+                          <Text style={styles.verifyConfirmText}>
+                            Confirm end
+                          </Text>
+                        </Pressable>
+                      </View>
+                      <Text style={styles.hint}>
+                        Or tap the map again to choose a different spot
+                      </Text>
+                    </>
+                  )}
+                </View>
+              ) : endLabel && endLocation ? (
+                <View>
+                  <Text style={styles.endReady}>✓ End: {endLabel}</Text>
+                  <Text style={styles.hint}>
+                    Tap the map again if you want to change it
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.hint}>
+                  Tap the map above, then confirm the ending point
+                </Text>
+              )}
             </View>
           )}
         </View>
@@ -316,8 +492,8 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
         </Pressable>
         {error && <Text style={styles.error}>{error}</Text>}
         <Text style={styles.footerHint}>
-          {endMode === 'loop'
-            ? 'Routes loop back home automatically'
+          {endMode === 'current'
+            ? 'Routes loop back to your current location'
             : 'Route ends at your chosen destination'}
         </Text>
         <Text style={styles.mockBadge}>Google Maps · live routes</Text>
@@ -409,6 +585,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginBottom: 4,
   },
+  mapBlock: { gap: 10 },
+  locationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  refreshLink: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.purple,
+  },
   gpsBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -417,7 +604,14 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(196,181,244,0.3)',
     borderRadius: 16,
     paddingHorizontal: 12,
-    paddingVertical: 12,
+    paddingVertical: 14,
+    minHeight: 56,
+  },
+  gpsDetecting: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   gpsText: { flex: 1, fontSize: 13, color: colors.purpleMuted },
   readyPill: {
@@ -427,25 +621,71 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   readyText: { fontSize: 11, color: colors.success, fontWeight: '600' },
-  divider: {
-    height: 1.5,
-    backgroundColor: 'rgba(196,181,244,0.25)',
-    marginTop: 14,
+  endStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 6,
+  },
+  endReady: {
+    fontSize: 12,
+    color: colors.success,
+    fontWeight: '600',
+    marginTop: 8,
+  },
+  verifyBox: {
+    marginTop: 4,
+    backgroundColor: 'rgba(244,200,66,0.1)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(244,200,66,0.4)',
+    borderRadius: 16,
+    padding: 12,
+  },
+  verifyLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.lavenderSoft,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginBottom: 6,
+  },
+  verifyAddress: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.purple,
     marginBottom: 12,
   },
-  checkRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  checkbox: {
-    width: 20,
-    height: 20,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: 'rgba(196,181,244,0.5)',
-    alignItems: 'center',
-    justifyContent: 'center',
+  verifyActions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
   },
-  checkboxOn: { backgroundColor: colors.purple, borderColor: colors.purple },
-  checkMark: { color: colors.cream, fontSize: 11, fontWeight: '800' },
-  checkLabel: { fontSize: 13, color: colors.purple, fontWeight: '500' },
+  verifyCancelBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 14,
+    alignItems: 'center',
+    backgroundColor: 'rgba(196,181,244,0.18)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(196,181,244,0.4)',
+  },
+  verifyCancelText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.purpleMuted,
+  },
+  verifyConfirmBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 14,
+    alignItems: 'center',
+    backgroundColor: colors.purple,
+  },
+  verifyConfirmText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.cream,
+  },
   hint: { fontSize: 11, color: colors.lavenderSoft, marginTop: 6 },
   subhint: {
     fontSize: 11,
