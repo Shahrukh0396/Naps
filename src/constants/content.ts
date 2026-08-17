@@ -55,7 +55,7 @@ export const SUPPORT_FAQS = [
   },
   {
     q: 'Can I open the route in Google Maps?',
-    a: 'Yes. After you find a route, tap Start Navigation to open the nap drive in Google Maps. A nap timer with Extend stays on the map when you return to the app — pick how many minutes to add and the route updates.',
+    a: 'Yes. After you find a route, tap Nap Begins to open the in-app nap map and timer. Use the Open / Maps button on that screen anytime you want turn-by-turn in Google Maps. Extend updates the route while the timer stays in the app.',
   },
   {
     q: 'What is the nap timer for?',

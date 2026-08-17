@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { EXTEND_PRESETS, EXTEND_WHEEL_MINUTES } from '../constants/content';
-import { colors } from '../theme/colors';
+import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 
 const ITEM_HEIGHT = 44;
 const VISIBLE_ROWS = 3;
@@ -36,6 +36,8 @@ export default function ExtendTimeSheet({
   onConfirm,
 }: ExtendTimeSheetProps) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const wheelRef = useRef<ScrollView>(null);
   const [selected, setSelected] = useState(defaultMinutes);
 
@@ -176,173 +178,175 @@ export default function ExtendTimeSheet({
   );
 }
 
-const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    justifyContent: 'flex-end',
-    backgroundColor: 'rgba(45,27,105,0.35)',
-  },
-  backdropTap: {
-    flex: 1,
-  },
-  sheet: {
-    backgroundColor: colors.cream,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    borderWidth: 1.5,
-    borderColor: colors.lavenderBorder,
-    borderBottomWidth: 0,
-  },
-  handle: {
-    alignSelf: 'center',
-    width: 42,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.lavenderBorder,
-    marginBottom: 14,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: colors.purple,
-    letterSpacing: -0.3,
-  },
-  subtitle: {
-    marginTop: 4,
-    fontSize: 13,
-    color: colors.purpleMuted,
-    marginBottom: 16,
-  },
-  sectionLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.lavenderSoft,
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
-    marginBottom: 8,
-  },
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-  },
-  chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-    backgroundColor: colors.lavenderWash,
-    borderWidth: 1.5,
-    borderColor: colors.lavenderBorder,
-  },
-  chipActive: {
-    backgroundColor: colors.purple,
-    borderColor: colors.purple,
-  },
-  chipText: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: colors.purple,
-  },
-  chipTextActive: {
-    color: colors.cream,
-  },
-  wheelWrap: {
-    height: ITEM_HEIGHT * VISIBLE_ROWS,
-    borderRadius: 18,
-    backgroundColor: 'rgba(196,181,244,0.12)',
-    borderWidth: 1.5,
-    borderColor: colors.lavenderBorder,
-    overflow: 'hidden',
-    marginBottom: 14,
-  },
-  wheelHighlight: {
-    position: 'absolute',
-    left: 8,
-    right: 8,
-    top: ITEM_HEIGHT,
-    height: ITEM_HEIGHT,
-    borderRadius: 14,
-    backgroundColor: colors.goldSoft,
-    borderWidth: 1.5,
-    borderColor: colors.gold,
-    zIndex: 1,
-  },
-  wheelItem: {
-    height: ITEM_HEIGHT,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  wheelText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.lavenderSoft,
-  },
-  wheelTextActive: {
-    color: colors.purple,
-    fontWeight: '800',
-    fontSize: 18,
-  },
-  preview: {
-    backgroundColor: 'rgba(255,255,255,0.55)',
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderWidth: 1.5,
-    borderColor: colors.lavenderBorder,
-    marginBottom: 14,
-  },
-  previewMain: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: colors.purple,
-  },
-  previewSub: {
-    marginTop: 4,
-    fontSize: 12,
-    color: colors.purpleMuted,
-    fontWeight: '600',
-  },
-  previewNote: {
-    marginTop: 6,
-    fontSize: 11,
-    color: colors.lavenderSoft,
-    fontWeight: '600',
-  },
-  actions: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  cancelBtn: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 14,
-    borderRadius: 999,
-    backgroundColor: colors.lavenderWash,
-    borderWidth: 1.5,
-    borderColor: colors.lavenderBorder,
-  },
-  cancelText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.purpleMuted,
-  },
-  confirmBtn: {
-    flex: 1.4,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    backgroundColor: colors.gold,
-  },
-  confirmText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.purple,
-    textAlign: 'center',
-  },
-});
+function makeStyles(colors: ColorPalette) {
+  return StyleSheet.create({
+    backdrop: {
+      flex: 1,
+      justifyContent: 'flex-end',
+      backgroundColor: colors.overlayScrim,
+    },
+    backdropTap: {
+      flex: 1,
+    },
+    sheet: {
+      backgroundColor: colors.cream,
+      borderTopLeftRadius: 28,
+      borderTopRightRadius: 28,
+      paddingHorizontal: 20,
+      paddingTop: 10,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+      borderBottomWidth: 0,
+    },
+    handle: {
+      alignSelf: 'center',
+      width: 42,
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: colors.lavenderBorder,
+      marginBottom: 14,
+    },
+    title: {
+      fontSize: 20,
+      fontWeight: '800',
+      color: colors.purple,
+      letterSpacing: -0.3,
+    },
+    subtitle: {
+      marginTop: 4,
+      fontSize: 13,
+      color: colors.purpleMuted,
+      marginBottom: 16,
+    },
+    sectionLabel: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: colors.lavenderSoft,
+      letterSpacing: 0.6,
+      textTransform: 'uppercase',
+      marginBottom: 8,
+    },
+    chipRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+      marginBottom: 16,
+    },
+    chip: {
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      borderRadius: 999,
+      backgroundColor: colors.lavenderWash,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+    },
+    chipActive: {
+      backgroundColor: colors.primary,
+      borderColor: colors.primary,
+    },
+    chipText: {
+      fontSize: 14,
+      fontWeight: '800',
+      color: colors.purple,
+    },
+    chipTextActive: {
+      color: colors.onPrimary,
+    },
+    wheelWrap: {
+      height: ITEM_HEIGHT * VISIBLE_ROWS,
+      borderRadius: 18,
+      backgroundColor: colors.inputBg,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+      overflow: 'hidden',
+      marginBottom: 14,
+    },
+    wheelHighlight: {
+      position: 'absolute',
+      left: 8,
+      right: 8,
+      top: ITEM_HEIGHT,
+      height: ITEM_HEIGHT,
+      borderRadius: 14,
+      backgroundColor: colors.goldSoft,
+      borderWidth: 1.5,
+      borderColor: colors.gold,
+      zIndex: 1,
+    },
+    wheelItem: {
+      height: ITEM_HEIGHT,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    wheelText: {
+      fontSize: 16,
+      fontWeight: '600',
+      color: colors.lavenderSoft,
+    },
+    wheelTextActive: {
+      color: colors.purple,
+      fontWeight: '800',
+      fontSize: 18,
+    },
+    preview: {
+      backgroundColor: colors.surfaceMuted,
+      borderRadius: 16,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+      marginBottom: 14,
+    },
+    previewMain: {
+      fontSize: 15,
+      fontWeight: '800',
+      color: colors.purple,
+    },
+    previewSub: {
+      marginTop: 4,
+      fontSize: 12,
+      color: colors.purpleMuted,
+      fontWeight: '600',
+    },
+    previewNote: {
+      marginTop: 6,
+      fontSize: 11,
+      color: colors.lavenderSoft,
+      fontWeight: '600',
+    },
+    actions: {
+      flexDirection: 'row',
+      gap: 10,
+    },
+    cancelBtn: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 14,
+      borderRadius: 999,
+      backgroundColor: colors.lavenderWash,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+    },
+    cancelText: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: colors.purpleMuted,
+    },
+    confirmBtn: {
+      flex: 1.4,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 14,
+      paddingHorizontal: 12,
+      borderRadius: 999,
+      backgroundColor: colors.gold,
+    },
+    confirmText: {
+      fontSize: 13,
+      fontWeight: '800',
+      color: colors.ink,
+      textAlign: 'center',
+    },
+  });
+}

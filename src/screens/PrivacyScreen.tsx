@@ -1,12 +1,14 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import GradientBackground from '../components/GradientBackground';
 import type { PrivacyScreenProps } from '../navigation/types';
-import { colors } from '../theme/colors';
+import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 
 export default function PrivacyScreen({ navigation }: PrivacyScreenProps) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   return (
     <GradientBackground style={{ flex: 1 }}>
       <ScrollView
@@ -24,8 +26,8 @@ export default function PrivacyScreen({ navigation }: PrivacyScreenProps) {
           Location data is not stored on our servers or sold to third parties.
         </Text>
         <Text style={styles.p}>
-          Settings you save (home address, defaults, alert preferences) stay on
-          this device via local storage.
+          Settings you save (saved places, defaults, alert preferences, appearance)
+          stay on this device via local storage.
         </Text>
         <Text style={styles.p}>
           When Google Maps or Spotify integrations are enabled in a later phase,
@@ -40,18 +42,20 @@ export default function PrivacyScreen({ navigation }: PrivacyScreenProps) {
   );
 }
 
-const styles = StyleSheet.create({
-  back: { color: colors.purpleMuted, fontSize: 14, marginBottom: 20 },
-  h1: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: colors.purple,
-    marginBottom: 16,
-  },
-  p: {
-    fontSize: 14,
-    color: colors.purpleMuted,
-    lineHeight: 22,
-    marginBottom: 14,
-  },
-});
+function makeStyles(colors: ColorPalette) {
+  return StyleSheet.create({
+    back: { color: colors.purpleMuted, fontSize: 14, marginBottom: 20 },
+    h1: {
+      fontSize: 26,
+      fontWeight: '800',
+      color: colors.purple,
+      marginBottom: 16,
+    },
+    p: {
+      fontSize: 14,
+      color: colors.purpleMuted,
+      lineHeight: 22,
+      marginBottom: 14,
+    },
+  });
+}

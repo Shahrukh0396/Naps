@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import GradientBackground from '../components/GradientBackground';
 import type { AboutScreenProps } from '../navigation/types';
-import { colors } from '../theme/colors';
+import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 
 const FEATURES = [
   {
@@ -30,6 +30,8 @@ const FEATURES = [
 
 export default function AboutScreen({ navigation }: AboutScreenProps) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   return (
     <GradientBackground style={{ flex: 1 }}>
       <ScrollView
@@ -73,65 +75,67 @@ export default function AboutScreen({ navigation }: AboutScreenProps) {
   );
 }
 
-const styles = StyleSheet.create({
-  back: { color: colors.purpleMuted, fontSize: 14, marginBottom: 24 },
-  heroEmoji: { fontSize: 56, textAlign: 'center', marginBottom: 12 },
-  h1: {
-    fontSize: 28,
-    fontWeight: '900',
-    color: colors.purple,
-    textAlign: 'center',
-    lineHeight: 34,
-    marginBottom: 12,
-  },
-  lead: {
-    fontSize: 16,
-    color: colors.purpleMuted,
-    textAlign: 'center',
-    lineHeight: 24,
-    marginBottom: 24,
-  },
-  cta: {
-    backgroundColor: colors.purple,
-    borderRadius: 999,
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  ctaText: { color: '#fff', fontWeight: '800', fontSize: 16 },
-  secondary: {
-    backgroundColor: 'rgba(255,255,255,0.8)',
-    borderRadius: 999,
-    paddingVertical: 14,
-    alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: 'rgba(196,181,244,0.5)',
-    marginBottom: 36,
-  },
-  secondaryText: { color: colors.purple, fontWeight: '700', fontSize: 16 },
-  h2: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: colors.purple,
-    textAlign: 'center',
-    marginBottom: 16,
-  },
-  feature: {
-    flexDirection: 'row',
-    gap: 12,
-    backgroundColor: 'rgba(255,255,255,0.7)',
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 10,
-    borderWidth: 1.5,
-    borderColor: 'rgba(196,181,244,0.3)',
-  },
-  featureEmoji: { fontSize: 22 },
-  featureTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.purple,
-    marginBottom: 4,
-  },
-  featureDesc: { fontSize: 13, color: colors.purpleMuted, lineHeight: 18 },
-});
+function makeStyles(colors: ColorPalette) {
+  return StyleSheet.create({
+    back: { color: colors.purpleMuted, fontSize: 14, marginBottom: 24 },
+    heroEmoji: { fontSize: 56, textAlign: 'center', marginBottom: 12 },
+    h1: {
+      fontSize: 28,
+      fontWeight: '900',
+      color: colors.purple,
+      textAlign: 'center',
+      lineHeight: 34,
+      marginBottom: 12,
+    },
+    lead: {
+      fontSize: 16,
+      color: colors.purpleMuted,
+      textAlign: 'center',
+      lineHeight: 24,
+      marginBottom: 24,
+    },
+    cta: {
+      backgroundColor: colors.primary,
+      borderRadius: 999,
+      paddingVertical: 14,
+      alignItems: 'center',
+      marginBottom: 10,
+    },
+    ctaText: { color: colors.onPrimary, fontWeight: '800', fontSize: 16 },
+    secondary: {
+      backgroundColor: colors.surfaceGlass,
+      borderRadius: 999,
+      paddingVertical: 14,
+      alignItems: 'center',
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+      marginBottom: 36,
+    },
+    secondaryText: { color: colors.purple, fontWeight: '700', fontSize: 16 },
+    h2: {
+      fontSize: 22,
+      fontWeight: '800',
+      color: colors.purple,
+      textAlign: 'center',
+      marginBottom: 16,
+    },
+    feature: {
+      flexDirection: 'row',
+      gap: 12,
+      backgroundColor: colors.surfaceGlass,
+      borderRadius: 16,
+      padding: 14,
+      marginBottom: 10,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+    },
+    featureEmoji: { fontSize: 22 },
+    featureTitle: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.purple,
+      marginBottom: 4,
+    },
+    featureDesc: { fontSize: 13, color: colors.purpleMuted, lineHeight: 18 },
+  });
+}

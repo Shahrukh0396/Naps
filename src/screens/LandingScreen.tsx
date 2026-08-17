@@ -1,14 +1,16 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import GradientBackground from '../components/GradientBackground';
 import type { LandingScreenProps } from '../navigation/types';
-import { colors } from '../theme/colors';
+import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 
 const LOAD_DURATION_MS = 2200;
 
 export default function LandingScreen({ navigation }: LandingScreenProps) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const progress = useRef(new Animated.Value(0)).current;
   const logoOpacity = useRef(new Animated.Value(0)).current;
   const logoScale = useRef(new Animated.Value(0.88)).current;
@@ -73,43 +75,45 @@ export default function LandingScreen({ navigation }: LandingScreenProps) {
   );
 }
 
-const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-  },
-  center: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  logoWrap: {
-    alignItems: 'center',
-    gap: 10,
-  },
-  logoEmoji: {
-    fontSize: 72,
-    lineHeight: 84,
-  },
-  brand: {
-    fontSize: 42,
-    fontWeight: '800',
-    color: colors.purple,
-    letterSpacing: -1,
-  },
-  progressSection: {
-    paddingHorizontal: 48,
-  },
-  track: {
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.45)',
-    borderWidth: 1,
-    borderColor: 'rgba(196,181,244,0.35)',
-    overflow: 'hidden',
-  },
-  fill: {
-    height: '100%',
-    borderRadius: 999,
-    backgroundColor: colors.gold,
-  },
-});
+function makeStyles(colors: ColorPalette) {
+  return StyleSheet.create({
+    root: {
+      flex: 1,
+    },
+    center: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    logoWrap: {
+      alignItems: 'center',
+      gap: 10,
+    },
+    logoEmoji: {
+      fontSize: 72,
+      lineHeight: 84,
+    },
+    brand: {
+      fontSize: 42,
+      fontWeight: '800',
+      color: colors.purple,
+      letterSpacing: -1,
+    },
+    progressSection: {
+      paddingHorizontal: 48,
+    },
+    track: {
+      height: 6,
+      borderRadius: 999,
+      backgroundColor: colors.progressTrack,
+      borderWidth: 1,
+      borderColor: colors.lavenderBorder,
+      overflow: 'hidden',
+    },
+    fill: {
+      height: '100%',
+      borderRadius: 999,
+      backgroundColor: colors.gold,
+    },
+  });
+}

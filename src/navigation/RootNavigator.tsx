@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import { DarkTheme, DefaultTheme, NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,7 +13,7 @@ import AboutScreen from '../screens/AboutScreen';
 import SupportScreen from '../screens/SupportScreen';
 import PrivacyScreen from '../screens/PrivacyScreen';
 import type { MainTabParamList, RootStackParamList } from './types';
-import { colors } from '../theme/colors';
+import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<MainTabParamList>();
@@ -22,11 +22,14 @@ function TabIcon({
   emoji,
   focused,
   label,
+  colors,
 }: {
   emoji: string;
   focused: boolean;
   label: string;
+  colors: ColorPalette;
 }) {
+  const styles = useMemo(() => makeTabStyles(colors), [colors]);
   return (
     <View style={[styles.tabIconWrap, focused && styles.tabIconWrapActive]}>
       <View style={[styles.tabIconBubble, focused && styles.tabIconBubbleActive]}>
@@ -39,6 +42,7 @@ function TabIcon({
 
 function MainTabs() {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
   const bottomPad = Math.max(insets.bottom, 10);
 
   return (
@@ -66,7 +70,7 @@ function MainTabs() {
           alignItems: 'center',
           ...Platform.select({
             ios: {
-              shadowColor: colors.purple,
+              shadowColor: colors.shadow,
               shadowOpacity: 0.12,
               shadowRadius: 18,
               shadowOffset: { width: 0, height: 8 },
@@ -84,7 +88,7 @@ function MainTabs() {
         component={PlanScreen}
         options={{
           tabBarIcon: ({ focused }) => (
-            <TabIcon emoji="🌙" focused={focused} label="Nap" />
+            <TabIcon emoji="🌙" focused={focused} label="Nap" colors={colors} />
           ),
           tabBarAccessibilityLabel: 'Plan nap route',
         }}
@@ -94,7 +98,7 @@ function MainTabs() {
         component={SupportScreen}
         options={{
           tabBarIcon: ({ focused }) => (
-            <TabIcon emoji="💬" focused={focused} label="Help" />
+            <TabIcon emoji="💬" focused={focused} label="Help" colors={colors} />
           ),
           tabBarAccessibilityLabel: 'Support',
         }}
@@ -104,7 +108,7 @@ function MainTabs() {
         component={SettingsScreen}
         options={{
           tabBarIcon: ({ focused }) => (
-            <TabIcon emoji="⚙️" focused={focused} label="Settings" />
+            <TabIcon emoji="⚙️" focused={focused} label="Settings" colors={colors} />
           ),
           tabBarAccessibilityLabel: 'Settings',
         }}
@@ -114,8 +118,23 @@ function MainTabs() {
 }
 
 export default function RootNavigator() {
+  const { colors, darkMode } = useTheme();
+  const navTheme = useMemo(
+    () => ({
+      ...(darkMode ? DarkTheme : DefaultTheme),
+      colors: {
+        ...(darkMode ? DarkTheme.colors : DefaultTheme.colors),
+        background: colors.gradientMid,
+        card: colors.cream,
+        text: colors.purple,
+        border: colors.lavenderBorder,
+        primary: colors.primary,
+      },
+    }),
+    [colors, darkMode],
+  );
   return (
-    <NavigationContainer>
+    <NavigationContainer theme={navTheme}>
       <Stack.Navigator
         initialRouteName="Landing"
         screenOptions={{
@@ -146,46 +165,48 @@ export default function RootNavigator() {
   );
 }
 
-const styles = StyleSheet.create({
-  tabIconWrap: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: 88,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 18,
-  },
-  tabIconWrapActive: {
-    backgroundColor: colors.lavenderSoft,
-    height: 65,
-    borderRadius: 35,
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    marginTop: 14,
-  },
-  tabIconBubble: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'transparent',
-  },
-  tabIconBubbleActive: {
-    backgroundColor: colors.goldSoft,
-    borderWidth: 1.5,
-    borderColor: colors.gold,
-  },
-  tabEmoji: { fontSize: 17 },
-  tabLabel: {
-    marginTop: 2,
-    fontSize: 10,
-    fontWeight: '600',
-    letterSpacing: 0.2,
-    color: colors.lavenderSoft,
-  },
-  tabLabelActive: {
-    color: colors.purple,
-    fontWeight: '800',
-  },
-});
+function makeTabStyles(colors: ColorPalette) {
+  return StyleSheet.create({
+    tabIconWrap: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      minWidth: 88,
+      paddingHorizontal: 12,
+      paddingVertical: 4,
+      borderRadius: 18,
+    },
+    tabIconWrapActive: {
+      backgroundColor: colors.lavenderWash,
+      height: 65,
+      borderRadius: 35,
+      paddingHorizontal: 16,
+      paddingVertical: 6,
+      marginTop: 14,
+    },
+    tabIconBubble: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: 'transparent',
+    },
+    tabIconBubbleActive: {
+      backgroundColor: colors.goldSoft,
+      borderWidth: 1.5,
+      borderColor: colors.gold,
+    },
+    tabEmoji: { fontSize: 17 },
+    tabLabel: {
+      marginTop: 2,
+      fontSize: 10,
+      fontWeight: '600',
+      letterSpacing: 0.2,
+      color: colors.lavenderSoft,
+    },
+    tabLabelActive: {
+      color: colors.purple,
+      fontWeight: '800',
+    },
+  });
+}

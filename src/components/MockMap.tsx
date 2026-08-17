@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, Ellipse, Line, Path } from 'react-native-svg';
-import { colors } from '../theme/colors';
+import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 
 export default function MockMap({ height = 220 }: { height?: number }) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   return (
     <View style={[styles.wrap, { height }]}>
       <View style={styles.gradient} />
@@ -38,30 +40,32 @@ export default function MockMap({ height = 220 }: { height?: number }) {
   );
 }
 
-const styles = StyleSheet.create({
-  wrap: {
-    width: '100%',
-    overflow: 'hidden',
-    borderRadius: 24,
-    backgroundColor: '#ddeeff',
-  },
-  gradient: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: '#e8f4e8',
-    opacity: 0.85,
-  },
-  badge: {
-    position: 'absolute',
-    bottom: 10,
-    right: 12,
-    backgroundColor: 'rgba(255,248,240,0.85)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-  },
-  badgeText: {
-    fontSize: 10,
-    color: colors.purpleMuted,
-    fontWeight: '600',
-  },
-});
+function makeStyles(colors: ColorPalette) {
+  return StyleSheet.create({
+    wrap: {
+      width: '100%',
+      overflow: 'hidden',
+      borderRadius: 24,
+      backgroundColor: colors.mapBg,
+    },
+    gradient: {
+      ...StyleSheet.absoluteFill,
+      backgroundColor: colors.lavenderWash,
+      opacity: 0.85,
+    },
+    badge: {
+      position: 'absolute',
+      bottom: 10,
+      right: 12,
+      backgroundColor: colors.overlay,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 999,
+    },
+    badgeText: {
+      fontSize: 10,
+      color: colors.purpleMuted,
+      fontWeight: '600',
+    },
+  });
+}

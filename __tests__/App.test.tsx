@@ -5,6 +5,13 @@
 import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
 
+jest.mock('react-native-config', () => ({
+  __esModule: true,
+  default: {
+    GOOGLE_MAPS_API_KEY: 'test-maps-key',
+  },
+}));
+
 jest.mock('@react-native-async-storage/async-storage', () => ({
   setItem: jest.fn(() => Promise.resolve()),
   getItem: jest.fn(() => Promise.resolve(null)),

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -13,13 +13,23 @@ import GradientBackground from '../components/GradientBackground';
 import NapMap from '../components/NapMap';
 import PlacesAutocomplete from '../components/PlacesAutocomplete';
 import { DURATIONS, ROUTE_TYPES } from '../constants/content';
-import { useNapSettings } from '../context/SettingsContext';
+import {
+  placesWithAddress,
+  type SavedPlace,
+  useNapSettings,
+} from '../context/SettingsContext';
 import { useGpsLocation } from '../hooks/useGpsLocation';
 import { geocodeAddress, reverseGeocode } from '../services/geocode';
 import { findRouteSuggestions, RouteError } from '../services/mapsApi';
 import type { RouteStyleId } from '../types/route';
-import { colors } from '../theme/colors';
+import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 import type { PlanScreenProps } from '../navigation/types';
+
+function savedPlaceChipIcon(kind: SavedPlace['kind']): string {
+  if (kind === 'home') return '🏠';
+  if (kind === 'work') return '🏢';
+  return '📌';
+}
 
 type EndMode = 'current' | 'search' | 'map';
 type LatLng = { lat: number; lng: number };
@@ -32,6 +42,8 @@ const END_OPTIONS: Array<{ id: EndMode; label: string }> = [
 
 export default function PlanScreen({ navigation }: PlanScreenProps) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { settings } = useNapSettings();
   const {
     location: gpsLocation,
@@ -59,6 +71,11 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
   const [error, setError] = useState<string | null>(null);
   const pendingMapPickId = useRef(0);
 
+  const savedPlaces = useMemo(
+    () => placesWithAddress(settings.savedPlaces),
+    [settings.savedPlaces],
+  );
+
   useEffect(() => {
     detectGps();
   }, [detectGps]);
@@ -67,6 +84,28 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
     setSelectedDuration(settings.defaultDuration || 30);
     setActiveRoute(settings.defaultRouteType || 'highway');
   }, [settings.defaultDuration, settings.defaultRouteType]);
+
+  const applySavedPlace = async (place: SavedPlace) => {
+    setEndQuery(place.address);
+    setPendingEnd(null);
+    setEndResolving(true);
+    setError(null);
+    try {
+      const result = await geocodeAddress(place.address);
+      if (!result) {
+        setEndLocation(null);
+        setEndLabel(null);
+        setError('Could not find that address. Try another search.');
+        return;
+      }
+      setEndLocation(result.location);
+      setEndLabel(place.label);
+    } catch {
+      setError('Could not look up that address. Try again.');
+    } finally {
+      setEndResolving(false);
+    }
+  };
 
   const activeDuration = useCustom
     ? Math.max(30, parseInt(customMinutes || '0', 10) || 30)
@@ -274,7 +313,7 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
               style={styles.gpsBox}>
               {gpsStatus === 'detecting' ? (
                 <View style={styles.gpsDetecting}>
-                  <ActivityIndicator color={colors.purple} />
+                  <ActivityIndicator color={colors.primary} />
                   <Text style={styles.gpsText}>Detecting your location…</Text>
                 </View>
               ) : (
@@ -323,6 +362,25 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
 
           {endMode === 'search' && (
             <View style={{ zIndex: 30 }}>
+              {savedPlaces.length > 0 && (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.savedChipsScroll}
+                  contentContainerStyle={styles.savedChipsRow}
+                  keyboardShouldPersistTaps="handled">
+                  {savedPlaces.map(place => (
+                    <Pressable
+                      key={place.id}
+                      onPress={() => applySavedPlace(place)}
+                      style={styles.savedChip}>
+                      <Text style={styles.savedChipText} numberOfLines={1}>
+                        {savedPlaceChipIcon(place.kind)} {place.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              )}
               <PlacesAutocomplete
                 value={endQuery}
                 onChange={text => {
@@ -335,10 +393,12 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
                 variant="gold"
                 icon="🏁"
                 autoFocus
+                savedSuggestions={savedPlaces}
+                biasLocation={gpsLocation}
               />
               {endResolving ? (
                 <View style={styles.endStatusRow}>
-                  <ActivityIndicator size="small" color={colors.purple} />
+                  <ActivityIndicator size="small" color={colors.primary} />
                   <Text style={styles.hint}>Looking up address…</Text>
                 </View>
               ) : endLabel ? (
@@ -361,7 +421,7 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
                 <View style={styles.verifyBox}>
                   {endResolving || !pendingEnd.label ? (
                     <View style={styles.endStatusRow}>
-                      <ActivityIndicator size="small" color={colors.purple} />
+                      <ActivityIndicator size="small" color={colors.primary} />
                       <Text style={styles.hint}>Verifying place…</Text>
                     </View>
                   ) : (
@@ -483,7 +543,7 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
           style={[styles.cta, loading && { opacity: 0.6 }]}>
           {loading ? (
             <View style={styles.ctaInner}>
-              <ActivityIndicator color={colors.cream} />
+              <ActivityIndicator color={colors.onPrimary} />
               <Text style={styles.ctaText}>Finding your route…</Text>
             </View>
           ) : (
@@ -502,278 +562,296 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
   );
 }
 
-const styles = StyleSheet.create({
-  flex: { flex: 1 },
-  scroll: { paddingHorizontal: 16 },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  logoEmoji: { fontSize: 22 },
-  brand: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: colors.purple,
-    letterSpacing: -0.5,
-  },
-  linkBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.45)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(196,181,244,0.4)',
-  },
-  linkText: { fontSize: 13, fontWeight: '600', color: colors.purpleMuted },
-  srOnly: { position: 'absolute', width: 1, height: 1, opacity: 0 },
-  tagline: {
-    textAlign: 'center',
-    color: colors.purpleMuted,
-    fontSize: 13,
-    marginBottom: 14,
-    fontWeight: '500',
-  },
-  card: {
-    backgroundColor: colors.card,
-    borderRadius: 24,
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 16,
-    marginBottom: 12,
-    overflow: 'visible',
-    shadowColor: colors.purple,
-    shadowOpacity: 0.1,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 3,
-  },
-  label: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.lavenderSoft,
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-    marginBottom: 10,
-  },
-  toggleRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
-  toggleBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 16,
-    backgroundColor: colors.lavenderWash,
-    borderWidth: 2,
-    borderColor: colors.lavenderBorder,
-    alignItems: 'center',
-  },
-  toggleBtnActive: {
-    backgroundColor: colors.purple,
-    borderColor: colors.purple,
-  },
-  toggleText: { fontSize: 12, fontWeight: '600', color: colors.purple },
-  toggleTextActive: { color: colors.cream },
-  input: {
-    backgroundColor: 'rgba(196,181,244,0.15)',
-    borderWidth: 2,
-    borderColor: colors.lavenderBorder,
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    color: colors.purple,
-    fontSize: 14,
-    marginBottom: 4,
-  },
-  mapBlock: { gap: 10 },
-  locationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  refreshLink: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.purple,
-  },
-  gpsBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(196,181,244,0.15)',
-    borderWidth: 2,
-    borderColor: 'rgba(196,181,244,0.3)',
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 14,
-    minHeight: 56,
-  },
-  gpsDetecting: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  gpsText: { flex: 1, fontSize: 13, color: colors.purpleMuted },
-  readyPill: {
-    backgroundColor: 'rgba(100,200,100,0.2)',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 999,
-  },
-  readyText: { fontSize: 11, color: colors.success, fontWeight: '600' },
-  endStatusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 6,
-  },
-  endReady: {
-    fontSize: 12,
-    color: colors.success,
-    fontWeight: '600',
-    marginTop: 8,
-  },
-  verifyBox: {
-    marginTop: 4,
-    backgroundColor: 'rgba(244,200,66,0.1)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(244,200,66,0.4)',
-    borderRadius: 16,
-    padding: 12,
-  },
-  verifyLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.lavenderSoft,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-    marginBottom: 6,
-  },
-  verifyAddress: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.purple,
-    marginBottom: 12,
-  },
-  verifyActions: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 8,
-  },
-  verifyCancelBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 14,
-    alignItems: 'center',
-    backgroundColor: 'rgba(196,181,244,0.18)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(196,181,244,0.4)',
-  },
-  verifyCancelText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.purpleMuted,
-  },
-  verifyConfirmBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 14,
-    alignItems: 'center',
-    backgroundColor: colors.purple,
-  },
-  verifyConfirmText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.cream,
-  },
-  hint: { fontSize: 11, color: colors.lavenderSoft, marginTop: 6 },
-  subhint: {
-    fontSize: 11,
-    color: colors.lavenderSoft,
-    marginTop: -6,
-    marginBottom: 10,
-  },
-  pillsRow: { flexDirection: 'row', gap: 8 },
-  pill: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: colors.lavenderWash,
-    borderWidth: 2,
-    borderColor: 'rgba(196,181,244,0.35)',
-  },
-  pillActive: {
-    backgroundColor: colors.gold,
-    borderColor: colors.gold,
-  },
-  pillText: { fontSize: 13, fontWeight: '600', color: colors.purple },
-  pillTextActive: { fontWeight: '700' },
-  customRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  customToggle: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 16,
-    backgroundColor: 'rgba(196,181,244,0.12)',
-    borderWidth: 2,
-    borderColor: 'rgba(196,181,244,0.35)',
-  },
-  customToggleOn: {
-    backgroundColor: colors.goldSoft,
-    borderColor: colors.gold,
-  },
-  customToggleText: { fontSize: 13, fontWeight: '600', color: colors.purple },
-  minLabel: { fontSize: 13, color: colors.lavenderSoft },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  routeTile: {
-    width: '48%',
-    flexGrow: 1,
-    flexDirection: 'row',
-    gap: 8,
-    padding: 12,
-    borderRadius: 16,
-    backgroundColor: 'rgba(196,181,244,0.15)',
-    borderWidth: 2,
-    borderColor: colors.lavenderBorder,
-  },
-  routeTileActive: {
-    backgroundColor: colors.goldSoft,
-    borderColor: colors.gold,
-  },
-  routeEmoji: { fontSize: 18 },
-  routeLabel: { fontSize: 13, color: colors.purple, fontWeight: '500' },
-  routeSub: { fontSize: 10, color: colors.lavenderSoft, marginTop: 2 },
-  cta: {
-    backgroundColor: colors.purple,
-    borderRadius: 999,
-    paddingVertical: 16,
-    alignItems: 'center',
-    marginTop: 4,
-    shadowColor: colors.purple,
-    shadowOpacity: 0.35,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 4,
-  },
-  ctaInner: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  ctaText: { color: colors.cream, fontSize: 16, fontWeight: '700' },
-  error: {
-    textAlign: 'center',
-    color: '#c0392b',
-    fontWeight: '600',
-    fontSize: 13,
-    marginTop: 10,
-  },
-  footerHint: {
-    textAlign: 'center',
-    color: 'rgba(45,27,105,0.5)',
-    fontSize: 12,
-    marginTop: 10,
-  },
-  mockBadge: {
-    textAlign: 'center',
-    fontSize: 11,
-    color: colors.lavenderSoft,
-    marginTop: 8,
-    fontWeight: '600',
-  },
-});
+function makeStyles(colors: ColorPalette) {
+  return StyleSheet.create({
+    flex: { flex: 1 },
+    scroll: { paddingHorizontal: 16 },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 8,
+    },
+    brandRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    logoEmoji: { fontSize: 22 },
+    brand: {
+      fontSize: 22,
+      fontWeight: '800',
+      color: colors.purple,
+      letterSpacing: -0.5,
+    },
+    linkBtn: {
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 999,
+      backgroundColor: colors.surfaceMuted,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+    },
+    linkText: { fontSize: 13, fontWeight: '600', color: colors.purpleMuted },
+    srOnly: { position: 'absolute', width: 1, height: 1, opacity: 0 },
+    tagline: {
+      textAlign: 'center',
+      color: colors.purpleMuted,
+      fontSize: 13,
+      marginBottom: 14,
+      fontWeight: '500',
+    },
+    card: {
+      backgroundColor: colors.card,
+      borderRadius: 24,
+      paddingHorizontal: 20,
+      paddingTop: 16,
+      paddingBottom: 16,
+      marginBottom: 12,
+      overflow: 'visible',
+      shadowColor: colors.shadow,
+      shadowOpacity: 0.1,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 4 },
+      elevation: 3,
+    },
+    label: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: colors.lavenderSoft,
+      letterSpacing: 0.8,
+      textTransform: 'uppercase',
+      marginBottom: 10,
+    },
+    toggleRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+    toggleBtn: {
+      flex: 1,
+      paddingVertical: 10,
+      borderRadius: 16,
+      backgroundColor: colors.lavenderWash,
+      borderWidth: 2,
+      borderColor: colors.lavenderBorder,
+      alignItems: 'center',
+    },
+    toggleBtnActive: {
+      backgroundColor: colors.primary,
+      borderColor: colors.primary,
+    },
+    toggleText: { fontSize: 12, fontWeight: '600', color: colors.purple },
+    toggleTextActive: { color: colors.onPrimary },
+    input: {
+      backgroundColor: colors.inputBg,
+      borderWidth: 2,
+      borderColor: colors.lavenderBorder,
+      borderRadius: 16,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      color: colors.purple,
+      fontSize: 14,
+      marginBottom: 4,
+    },
+    mapBlock: { gap: 10 },
+    locationRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    refreshLink: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.purple,
+    },
+    gpsBox: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: colors.inputBg,
+      borderWidth: 2,
+      borderColor: colors.lavenderBorder,
+      borderRadius: 16,
+      paddingHorizontal: 12,
+      paddingVertical: 14,
+      minHeight: 56,
+    },
+    gpsDetecting: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+    },
+    gpsText: { flex: 1, fontSize: 13, color: colors.purpleMuted },
+    readyPill: {
+      backgroundColor: 'rgba(100,200,100,0.2)',
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+      borderRadius: 999,
+    },
+    readyText: { fontSize: 11, color: colors.success, fontWeight: '600' },
+    endStatusRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      marginTop: 6,
+    },
+    endReady: {
+      fontSize: 12,
+      color: colors.success,
+      fontWeight: '600',
+      marginTop: 8,
+    },
+    savedChipsScroll: { marginBottom: 10 },
+    savedChipsRow: { flexDirection: 'row', gap: 8, paddingRight: 4 },
+    savedChip: {
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 999,
+      backgroundColor: colors.goldSoft,
+      borderWidth: 1.5,
+      borderColor: 'rgba(244,200,66,0.45)',
+      maxWidth: 160,
+    },
+    savedChipText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.ink,
+    },
+    verifyBox: {
+      marginTop: 4,
+      backgroundColor: colors.goldSoft,
+      borderWidth: 1.5,
+      borderColor: 'rgba(244,200,66,0.4)',
+      borderRadius: 16,
+      padding: 12,
+    },
+    verifyLabel: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: colors.lavenderSoft,
+      textTransform: 'uppercase',
+      letterSpacing: 0.6,
+      marginBottom: 6,
+    },
+    verifyAddress: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.purple,
+      marginBottom: 12,
+    },
+    verifyActions: {
+      flexDirection: 'row',
+      gap: 8,
+      marginBottom: 8,
+    },
+    verifyCancelBtn: {
+      flex: 1,
+      paddingVertical: 10,
+      borderRadius: 14,
+      alignItems: 'center',
+      backgroundColor: colors.lavenderWash,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+    },
+    verifyCancelText: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.purpleMuted,
+    },
+    verifyConfirmBtn: {
+      flex: 1,
+      paddingVertical: 10,
+      borderRadius: 14,
+      alignItems: 'center',
+      backgroundColor: colors.primary,
+    },
+    verifyConfirmText: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.onPrimary,
+    },
+    hint: { fontSize: 11, color: colors.lavenderSoft, marginTop: 6 },
+    subhint: {
+      fontSize: 11,
+      color: colors.lavenderSoft,
+      marginTop: -6,
+      marginBottom: 10,
+    },
+    pillsRow: { flexDirection: 'row', gap: 8 },
+    pill: {
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+      borderRadius: 999,
+      backgroundColor: colors.lavenderWash,
+      borderWidth: 2,
+      borderColor: colors.lavenderBorder,
+    },
+    pillActive: {
+      backgroundColor: colors.gold,
+      borderColor: colors.gold,
+    },
+    pillText: { fontSize: 13, fontWeight: '600', color: colors.purple },
+    pillTextActive: { fontWeight: '700', color: colors.ink },
+    customRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    customToggle: {
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 16,
+      backgroundColor: colors.inputBg,
+      borderWidth: 2,
+      borderColor: colors.lavenderBorder,
+    },
+    customToggleOn: {
+      backgroundColor: colors.goldSoft,
+      borderColor: colors.gold,
+    },
+    customToggleText: { fontSize: 13, fontWeight: '600', color: colors.purple },
+    minLabel: { fontSize: 13, color: colors.lavenderSoft },
+    grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    routeTile: {
+      width: '48%',
+      flexGrow: 1,
+      flexDirection: 'row',
+      gap: 8,
+      padding: 12,
+      borderRadius: 16,
+      backgroundColor: colors.inputBg,
+      borderWidth: 2,
+      borderColor: colors.lavenderBorder,
+    },
+    routeTileActive: {
+      backgroundColor: colors.goldSoft,
+      borderColor: colors.gold,
+    },
+    routeEmoji: { fontSize: 18 },
+    routeLabel: { fontSize: 13, color: colors.purple, fontWeight: '500' },
+    routeSub: { fontSize: 10, color: colors.lavenderSoft, marginTop: 2 },
+    cta: {
+      backgroundColor: colors.primary,
+      borderRadius: 999,
+      paddingVertical: 16,
+      alignItems: 'center',
+      marginTop: 4,
+      shadowColor: colors.shadow,
+      shadowOpacity: 0.35,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: 4,
+    },
+    ctaInner: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+    ctaText: { color: colors.onPrimary, fontSize: 16, fontWeight: '700' },
+    error: {
+      textAlign: 'center',
+      color: colors.error,
+      fontWeight: '600',
+      fontSize: 13,
+      marginTop: 10,
+    },
+    footerHint: {
+      textAlign: 'center',
+      color: colors.footerHint,
+      fontSize: 12,
+      marginTop: 10,
+    },
+    mockBadge: {
+      textAlign: 'center',
+      fontSize: 11,
+      color: colors.lavenderSoft,
+      marginTop: 8,
+      fontWeight: '600',
+    },
+  });
+}

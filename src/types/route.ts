@@ -18,6 +18,25 @@ export interface RouteLeg {
   steps: NavStep[];
 }
 
+export type RouteAlertKind = 'military' | 'route_restriction';
+
+export interface RouteAlert {
+  id: string;
+  kind: RouteAlertKind;
+  title: string;
+  message: string;
+  coordinate: LatLng;
+  /** Approximate alert radius in meters for map Circle */
+  radiusMeters: number;
+}
+
+/** Roads-snapped path used for Navigate rendering + proximity checks. */
+export interface SnappedRoutePath {
+  coordinates: LatLng[];
+  /** placeIds aligned to snapped points when Roads returns them */
+  placeIds?: (string | null)[];
+}
+
 export interface RouteResult {
   polyline: string;
   durationSeconds: number;
@@ -31,6 +50,9 @@ export interface RouteResult {
   allWaypoints?: LatLng[];
   extraStops?: string[];
   legs: RouteLeg[];
+  /** True when Routes API reports ignored travel restrictions on this path. */
+  routeRestrictionsPartiallyIgnored?: boolean;
+  alerts?: RouteAlert[];
 }
 
 export interface RouteVariant {

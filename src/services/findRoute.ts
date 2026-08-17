@@ -488,6 +488,8 @@ export async function findRoute(params: FindRouteParams): Promise<RouteResult> {
       waypoint: primaryWaypoint,
       allWaypoints: snappedWaypoints,
       extraStops,
+      routeRestrictionsPartiallyIgnored:
+        drive.routeRestrictionsPartiallyIgnored,
       legs: drive.legs.map(leg => ({
         distance: leg.distanceText,
         duration: leg.durationText,
@@ -511,6 +513,8 @@ export interface FindDirectRouteParams {
   destination: string;
   /** Prefer local roads when the nap used a non-highway style. */
   avoidHighways?: boolean;
+  /** Optional via points (e.g. bypass around a restricted area). */
+  waypoints?: string[];
 }
 
 /**
@@ -520,7 +524,7 @@ export interface FindDirectRouteParams {
 export async function findDirectRoute(
   params: FindDirectRouteParams,
 ): Promise<RouteResult> {
-  const { origin, destination, avoidHighways = false } = params;
+  const { origin, destination, avoidHighways = false, waypoints = [] } = params;
 
   if (!origin || !destination) {
     throw new RouteError('origin and destination are required');
@@ -531,6 +535,7 @@ export async function findDirectRoute(
       origin,
       destination,
       avoidHighways,
+      waypoints: waypoints.length > 0 ? waypoints : undefined,
     });
 
     if (drive.status !== 'OK' || !drive.legs.length) {
@@ -555,6 +560,8 @@ export async function findDirectRoute(
       waypoint: { lat: end.lat, lng: end.lng },
       allWaypoints: [],
       extraStops: [],
+      routeRestrictionsPartiallyIgnored:
+        drive.routeRestrictionsPartiallyIgnored,
       legs: drive.legs.map(leg => ({
         distance: leg.distanceText,
         duration: leg.durationText,

@@ -22,11 +22,20 @@ export function calcNapMatch(durationMins: number, targetMins: number): number {
   return Math.max(0, Math.round(100 - (diff / 20) * 100));
 }
 
-export function napMatchLabel(score: number): { text: string; color: string } {
-  if (score >= 90) return { text: 'Perfect match', color: '#2D7D2D' };
-  if (score >= 70) return { text: 'Good match', color: '#5A7D2D' };
-  if (score >= 50) return { text: 'Close', color: '#8B6A00' };
-  return { text: 'Off target', color: '#9B4444' };
+export function napMatchLabel(
+  score: number,
+  tones?: { good: string; ok: string; close: string; bad: string },
+): { text: string; color: string } {
+  const t = tones ?? {
+    good: '#2D7D2D',
+    ok: '#5A7D2D',
+    close: '#8B6A00',
+    bad: '#9B4444',
+  };
+  if (score >= 90) return { text: 'Perfect match', color: t.good };
+  if (score >= 70) return { text: 'Good match', color: t.ok };
+  if (score >= 50) return { text: 'Close', color: t.close };
+  return { text: 'Off target', color: t.bad };
 }
 
 function buildMockRoute(

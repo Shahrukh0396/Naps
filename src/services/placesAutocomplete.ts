@@ -9,10 +9,17 @@ export interface PlacePrediction {
   };
 }
 
+/** Default bias radius (~50km) — nearby ranks first; still allows farther matches. */
+const DEFAULT_BIAS_RADIUS_M = 50_000;
+
 export async function fetchPlacePredictions(params: {
   input: string;
   sessionToken: string;
   types?: string;
+  /** Bias results toward this point (user GPS / route origin). */
+  location?: { lat: number; lng: number } | null;
+  /** Bias radius in meters (used with location). */
+  radius?: number;
 }): Promise<PlacePrediction[]> {
   const input = params.input.trim();
   if (input.length < 2) return [];
@@ -23,6 +30,17 @@ export async function fetchPlacePredictions(params: {
     types: params.types ?? 'geocode',
     sessiontoken: params.sessionToken,
   });
+
+  if (params.location) {
+    query.set(
+      'location',
+      `${params.location.lat},${params.location.lng}`,
+    );
+    query.set(
+      'radius',
+      String(params.radius ?? DEFAULT_BIAS_RADIUS_M),
+    );
+  }
 
   const res = await fetch(
     `https://maps.googleapis.com/maps/api/place/autocomplete/json?${query.toString()}`,

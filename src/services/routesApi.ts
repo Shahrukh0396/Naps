@@ -9,6 +9,7 @@ const FIELD_MASK = [
   'routes.distanceMeters',
   'routes.polyline.encodedPolyline',
   'routes.description',
+  'routes.travelAdvisory.routeRestrictionsPartiallyIgnored',
   'routes.legs.duration',
   'routes.legs.staticDuration',
   'routes.legs.distanceMeters',
@@ -52,6 +53,8 @@ export type TrafficAwareRoute = {
   legs: NormalizedLeg[];
   /** Which backend produced the ETA. */
   source: 'routes' | 'directions';
+  /** Routes travel advisory — path may ignore some road restrictions. */
+  routeRestrictionsPartiallyIgnored?: boolean;
 };
 
 export type ComputeDriveParams = {
@@ -137,6 +140,9 @@ type RoutesApiRoute = {
   distanceMeters?: number;
   description?: string;
   polyline?: { encodedPolyline?: string };
+  travelAdvisory?: {
+    routeRestrictionsPartiallyIgnored?: boolean;
+  };
   legs?: Array<{
     duration?: string;
     staticDuration?: string;
@@ -198,6 +204,8 @@ function fromRoutesApi(route: RoutesApiRoute): TrafficAwareRoute {
     staticDurationSeconds,
     legs,
     source: 'routes',
+    routeRestrictionsPartiallyIgnored:
+      !!route.travelAdvisory?.routeRestrictionsPartiallyIgnored,
   };
 }
 

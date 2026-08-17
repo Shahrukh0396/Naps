@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { colors } from '../theme/colors';
+import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 
 const SPOTIFY_GREEN = '#1DB954';
 
@@ -16,6 +16,8 @@ interface SpotifyCardProps {
 
 /** Mock Spotify panel for Phase 1 — real OAuth comes in backend/integration. */
 export default function SpotifyCard({ durationMinutes }: SpotifyCardProps) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [connected, setConnected] = useState(false);
   const [playing, setPlaying] = useState(false);
 
@@ -71,57 +73,59 @@ export default function SpotifyCard({ durationMinutes }: SpotifyCardProps) {
   );
 }
 
-const styles = StyleSheet.create({
-  card: {
-    backgroundColor: 'rgba(255,255,255,0.85)',
-    borderRadius: 20,
-    borderWidth: 1.5,
-    borderColor: 'rgba(29,185,84,0.25)',
-    padding: 16,
-  },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
-  logoDot: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(29,185,84,0.12)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  title: { fontSize: 13, fontWeight: '700', color: colors.purple },
-  sub: { fontSize: 11, color: colors.lavenderSoft, marginTop: 2 },
-  connectBtn: {
-    backgroundColor: SPOTIFY_GREEN,
-    borderRadius: 14,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  connectText: { color: '#fff', fontWeight: '800', fontSize: 14 },
-  trackRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(196,181,244,0.35)',
-  },
-  trackTitle: { fontSize: 13, fontWeight: '600', color: colors.purple },
-  trackArtist: { fontSize: 11, color: colors.lavenderSoft },
-  trackDur: { fontSize: 11, color: colors.lavenderSoft },
-  actions: { flexDirection: 'row', gap: 8, marginTop: 8 },
-  playBtn: {
-    flex: 1,
-    backgroundColor: colors.purple,
-    borderRadius: 12,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  playText: { color: colors.cream, fontWeight: '700', fontSize: 13 },
-  disconnectBtn: {
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: colors.lavenderBorder,
-    justifyContent: 'center',
-  },
-  disconnectText: { color: colors.purpleMuted, fontWeight: '600', fontSize: 12 },
-});
+function makeStyles(colors: ColorPalette) {
+  return StyleSheet.create({
+    card: {
+      backgroundColor: colors.surfaceGlassStrong,
+      borderRadius: 20,
+      borderWidth: 1.5,
+      borderColor: 'rgba(29,185,84,0.25)',
+      padding: 16,
+    },
+    header: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
+    logoDot: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      backgroundColor: 'rgba(29,185,84,0.12)',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    title: { fontSize: 13, fontWeight: '700', color: colors.purple },
+    sub: { fontSize: 11, color: colors.lavenderSoft, marginTop: 2 },
+    connectBtn: {
+      backgroundColor: SPOTIFY_GREEN,
+      borderRadius: 14,
+      paddingVertical: 12,
+      alignItems: 'center',
+    },
+    connectText: { color: '#fff', fontWeight: '800', fontSize: 14 },
+    trackRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 6,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.lavenderBorder,
+    },
+    trackTitle: { fontSize: 13, fontWeight: '600', color: colors.purple },
+    trackArtist: { fontSize: 11, color: colors.lavenderSoft },
+    trackDur: { fontSize: 11, color: colors.lavenderSoft },
+    actions: { flexDirection: 'row', gap: 8, marginTop: 8 },
+    playBtn: {
+      flex: 1,
+      backgroundColor: colors.primary,
+      borderRadius: 12,
+      paddingVertical: 10,
+      alignItems: 'center',
+    },
+    playText: { color: colors.onPrimary, fontWeight: '700', fontSize: 13 },
+    disconnectBtn: {
+      paddingHorizontal: 14,
+      borderRadius: 12,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+      justifyContent: 'center',
+    },
+    disconnectText: { color: colors.purpleMuted, fontWeight: '600', fontSize: 12 },
+  });
+}

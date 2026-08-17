@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   StyleSheet,
@@ -7,7 +7,7 @@ import {
 } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import ExtendTimeSheet from './ExtendTimeSheet';
-import { colors } from '../theme/colors';
+import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 import { startNapAlert, stopNapAlert } from '../utils/napAlert';
 
 const EXTEND_MINUTES = 5;
@@ -32,6 +32,8 @@ interface NapTimerProps {
   }) => void;
   /** Fired once when the countdown reaches 0:00. */
   onComplete?: () => void;
+  /** Fired whenever the countdown value changes (navigation helpers). */
+  onSecondsLeftChange?: (secondsLeft: number) => void;
 }
 
 function formatTime(seconds: number): string {
@@ -93,7 +95,10 @@ export default function NapTimer({
   extendByMinutes = EXTEND_MINUTES,
   onExtend,
   onComplete,
+  onSecondsLeftChange,
 }: NapTimerProps) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [totalSeconds, setTotalSeconds] = useState(durationMinutes * 60);
   const [secondsLeft, setSecondsLeft] = useState(durationMinutes * 60);
   const [running, setRunning] = useState(autoStart);
@@ -140,6 +145,10 @@ export default function NapTimer({
     completeFiredRef.current = false;
     silenceAlert();
   }, [durationMinutes, autoStart, silenceAlert]);
+
+  useEffect(() => {
+    onSecondsLeftChange?.(secondsLeft);
+  }, [secondsLeft, onSecondsLeftChange]);
 
   useEffect(() => {
     if (secondsLeft !== 0 || completeFiredRef.current) return;
@@ -306,7 +315,7 @@ export default function NapTimer({
               <Text
                 style={[
                   styles.alertText,
-                  { color: isDone ? '#C62828' : colors.warning },
+                  { color: isDone ? colors.dangerAlert : colors.warning },
                 ]}>
                 {isDone
                   ? 'Nap time is up — head to your destination!'
@@ -424,7 +433,7 @@ export default function NapTimer({
                   {
                     backgroundColor: isDone
                       ? 'rgba(196,181,244,0.1)'
-                      : colors.purple,
+                      : colors.primary,
                     opacity: isDone ? 0.5 : 1,
                   },
                 ]}>
@@ -432,7 +441,7 @@ export default function NapTimer({
                   style={[
                     styles.playBtnText,
                     {
-                      color: isDone ? colors.lavender : colors.cream,
+                      color: isDone ? colors.lavender : colors.onPrimary,
                     },
                   ]}>
                   {running ? '⏸ Pause' : '▶ Start'}
@@ -475,146 +484,148 @@ export default function NapTimer({
   );
 }
 
-const styles = StyleSheet.create({
-  card: {
-    backgroundColor: colors.whiteGlass,
-    borderRadius: 24,
-    borderWidth: 1.5,
-    overflow: 'hidden',
-    shadowColor: colors.purple,
-    shadowOpacity: 0.1,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 3,
-  },
-  overlayCard: {
-    backgroundColor: 'rgba(255,248,240,0.96)',
-    borderRadius: 22,
-    borderWidth: 1.5,
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOpacity: 0.28,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 12,
-  },
-  cardAlerting: {
-    shadowColor: '#C62828',
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
-    elevation: 6,
-  },
-  alertBanner: {
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  alertRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  alertEmoji: { fontSize: 20 },
-  alertText: {
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  alertSub: {
-    fontSize: 10,
-    color: colors.purpleMuted,
-    marginTop: 2,
-    fontWeight: '600',
-  },
-  muteBtn: {
-    backgroundColor: colors.purple,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-  },
-  muteBtnText: {
-    color: colors.cream,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  body: { paddingHorizontal: 20, paddingVertical: 16 },
-  bodyOverlay: { paddingHorizontal: 16, paddingVertical: 14 },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
-  },
-  title: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.purple,
-  },
-  subtitle: {
-    fontSize: 10,
-    color: colors.lavenderSoft,
-    marginTop: 2,
-  },
-  headerActions: { flexDirection: 'row', gap: 6 },
-  iconBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(196,181,244,0.08)',
-  },
-  mainRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
-  ringWrap: { width: 80, height: 80 },
-  ringWrapSm: { width: 68, height: 68 },
-  ringCenter: {
-    ...StyleSheet.absoluteFill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  timeText: { fontWeight: '800', lineHeight: 20 },
-  remaining: { fontSize: 9, color: colors.lavenderSoft, marginTop: 2 },
-  controlsCol: { flex: 1 },
-  progressTrack: {
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: 'rgba(196,181,244,0.2)',
-    overflow: 'hidden',
-    marginBottom: 12,
-  },
-  progressFill: { height: '100%', borderRadius: 2 },
-  durationHint: {
-    fontSize: 10,
-    color: colors.lavenderSoft,
-    marginBottom: 8,
-  },
-  controlsRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  playBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 999,
-  },
-  playBtnText: { fontSize: 12, fontWeight: '700' },
-  extendBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: colors.gold,
-  },
-  extendBtnText: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: colors.purple,
-  },
-  resetBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(196,181,244,0.12)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  alertHint: {
-    fontSize: 10,
-    color: 'rgba(155,142,196,0.7)',
-    marginTop: 10,
-  },
-});
+function makeStyles(colors: ColorPalette) {
+  return StyleSheet.create({
+    card: {
+      backgroundColor: colors.whiteGlass,
+      borderRadius: 24,
+      borderWidth: 1.5,
+      overflow: 'hidden',
+      shadowColor: colors.shadow,
+      shadowOpacity: 0.1,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 4 },
+      elevation: 3,
+    },
+    overlayCard: {
+      backgroundColor: colors.overlay,
+      borderRadius: 22,
+      borderWidth: 1.5,
+      overflow: 'hidden',
+      shadowColor: colors.shadow,
+      shadowOpacity: 0.28,
+      shadowRadius: 18,
+      shadowOffset: { width: 0, height: 8 },
+      elevation: 12,
+    },
+    cardAlerting: {
+      shadowColor: colors.dangerAlert,
+      shadowOpacity: 0.35,
+      shadowRadius: 16,
+      elevation: 6,
+    },
+    alertBanner: {
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+    },
+    alertRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+    },
+    alertEmoji: { fontSize: 20 },
+    alertText: {
+      fontSize: 13,
+      fontWeight: '800',
+    },
+    alertSub: {
+      fontSize: 10,
+      color: colors.purpleMuted,
+      marginTop: 2,
+      fontWeight: '600',
+    },
+    muteBtn: {
+      backgroundColor: colors.primary,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 999,
+    },
+    muteBtnText: {
+      color: colors.onPrimary,
+      fontSize: 12,
+      fontWeight: '800',
+    },
+    body: { paddingHorizontal: 20, paddingVertical: 16 },
+    bodyOverlay: { paddingHorizontal: 16, paddingVertical: 14 },
+    headerRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      marginBottom: 12,
+    },
+    title: {
+      fontSize: 13,
+      fontWeight: '800',
+      color: colors.purple,
+    },
+    subtitle: {
+      fontSize: 10,
+      color: colors.lavenderSoft,
+      marginTop: 2,
+    },
+    headerActions: { flexDirection: 'row', gap: 6 },
+    iconBtn: {
+      width: 28,
+      height: 28,
+      borderRadius: 14,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.lavenderWash,
+    },
+    mainRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+    ringWrap: { width: 80, height: 80 },
+    ringWrapSm: { width: 68, height: 68 },
+    ringCenter: {
+      ...StyleSheet.absoluteFill,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    timeText: { fontWeight: '800', lineHeight: 20 },
+    remaining: { fontSize: 9, color: colors.lavenderSoft, marginTop: 2 },
+    controlsCol: { flex: 1 },
+    progressTrack: {
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: colors.lavenderWash,
+      overflow: 'hidden',
+      marginBottom: 12,
+    },
+    progressFill: { height: '100%', borderRadius: 2 },
+    durationHint: {
+      fontSize: 10,
+      color: colors.lavenderSoft,
+      marginBottom: 8,
+    },
+    controlsRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+    playBtn: {
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+      borderRadius: 999,
+    },
+    playBtnText: { fontSize: 12, fontWeight: '700' },
+    extendBtn: {
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 999,
+      backgroundColor: colors.gold,
+    },
+    extendBtnText: {
+      fontSize: 12,
+      fontWeight: '800',
+      color: colors.ink,
+    },
+    resetBtn: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      backgroundColor: colors.inputBg,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    alertHint: {
+      fontSize: 10,
+      color: colors.lavenderSoft,
+      marginTop: 10,
+    },
+  });
+}

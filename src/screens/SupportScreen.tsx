@@ -1,13 +1,15 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import GradientBackground from '../components/GradientBackground';
 import { SUPPORT_FAQS } from '../constants/content';
 import type { SupportScreenProps } from '../navigation/types';
-import { colors } from '../theme/colors';
+import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 
 export default function SupportScreen({ navigation }: SupportScreenProps) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [openIndex, setOpenIndex] = useState<number | null>(0);
 
   return (
@@ -52,66 +54,68 @@ export default function SupportScreen({ navigation }: SupportScreenProps) {
   );
 }
 
-const styles = StyleSheet.create({
-  emoji: { fontSize: 48, textAlign: 'center', marginBottom: 8, marginTop: 8 },
-  h1: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: colors.purple,
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  lead: {
-    fontSize: 15,
-    color: colors.purpleMuted,
-    textAlign: 'center',
-    marginBottom: 28,
-  },
-  faq: {
-    backgroundColor: 'rgba(255,255,255,0.7)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(196,181,244,0.3)',
-    borderRadius: 14,
-    marginBottom: 10,
-    overflow: 'hidden',
-  },
-  faqBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
-    gap: 12,
-  },
-  faqQ: {
-    flex: 1,
-    fontWeight: '700',
-    fontSize: 15,
-    color: colors.purple,
-  },
-  chev: { color: colors.purpleMuted, fontSize: 16 },
-  faqA: {
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    fontSize: 14,
-    color: '#4B3B8C',
-    lineHeight: 22,
-  },
-  mailBtn: {
-    marginTop: 16,
-    backgroundColor: colors.purple,
-    borderRadius: 999,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
-  mailText: { color: colors.cream, fontWeight: '800', fontSize: 15 },
-  aboutBtn: {
-    marginTop: 12,
-    paddingVertical: 14,
-    alignItems: 'center',
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.7)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(196,181,244,0.45)',
-  },
-  aboutText: { color: colors.purple, fontWeight: '700', fontSize: 14 },
-});
+function makeStyles(colors: ColorPalette) {
+  return StyleSheet.create({
+    emoji: { fontSize: 48, textAlign: 'center', marginBottom: 8, marginTop: 8 },
+    h1: {
+      fontSize: 28,
+      fontWeight: '800',
+      color: colors.purple,
+      textAlign: 'center',
+      marginBottom: 8,
+    },
+    lead: {
+      fontSize: 15,
+      color: colors.purpleMuted,
+      textAlign: 'center',
+      marginBottom: 28,
+    },
+    faq: {
+      backgroundColor: colors.surfaceGlass,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+      borderRadius: 14,
+      marginBottom: 10,
+      overflow: 'hidden',
+    },
+    faqBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: 16,
+      gap: 12,
+    },
+    faqQ: {
+      flex: 1,
+      fontWeight: '700',
+      fontSize: 15,
+      color: colors.purple,
+    },
+    chev: { color: colors.purpleMuted, fontSize: 16 },
+    faqA: {
+      paddingHorizontal: 16,
+      paddingBottom: 16,
+      fontSize: 14,
+      color: colors.purpleMuted,
+      lineHeight: 22,
+    },
+    mailBtn: {
+      marginTop: 16,
+      backgroundColor: colors.primary,
+      borderRadius: 999,
+      paddingVertical: 14,
+      alignItems: 'center',
+    },
+    mailText: { color: colors.onPrimary, fontWeight: '800', fontSize: 15 },
+    aboutBtn: {
+      marginTop: 12,
+      paddingVertical: 14,
+      alignItems: 'center',
+      borderRadius: 999,
+      backgroundColor: colors.surfaceGlass,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+    },
+    aboutText: { color: colors.purple, fontWeight: '700', fontSize: 14 },
+  });
+}

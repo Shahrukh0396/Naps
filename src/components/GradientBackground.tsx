@@ -1,7 +1,7 @@
 import React from 'react';
 import { StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { colors } from '../theme/colors';
+import { useTheme } from '../theme/ThemeContext';
 
 /** Matches web: linear-gradient(160deg, #C4B5F4 0%, #D9B8F0 40%, #F9C5D1 100%) */
 export default function GradientBackground({
@@ -11,6 +11,7 @@ export default function GradientBackground({
   children: React.ReactNode;
   style?: StyleProp<ViewStyle>;
 }) {
+  const { colors } = useTheme();
   return (
     <LinearGradient
       colors={[colors.gradientStart, colors.gradientMid, colors.gradientEnd]}

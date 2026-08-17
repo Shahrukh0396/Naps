@@ -14,12 +14,15 @@ import NapTimer from '../components/NapTimer';
 import PlacesAutocomplete from '../components/PlacesAutocomplete';
 import SpotifyCard from '../components/SpotifyCard';
 import { ROUTE_TYPE_META } from '../constants/content';
-import { useNapSettings } from '../context/SettingsContext';
+import {
+  placesWithAddress,
+  useNapSettings,
+} from '../context/SettingsContext';
 import { calcNapMatch, napMatchLabel } from '../mocks/routes';
 import { findRoute, findRouteSuggestions, RouteError } from '../services/mapsApi';
 import type { ResultsScreenProps } from '../navigation/types';
 import type { RouteResult, RouteStyleId, RouteVariant } from '../types/route';
-import { colors } from '../theme/colors';
+import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 
 function dirIcon(instruction: string): string {
   const t = instruction.toLowerCase();
@@ -34,6 +37,8 @@ function dirIcon(instruction: string): string {
 
 export default function ResultsScreen({ navigation, route: navRoute }: ResultsScreenProps) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { settings } = useNapSettings();
   const params = navRoute.params;
 
@@ -66,6 +71,10 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
   const originLabel = params.originLabel;
   const preferredStyle = params.preferredStyle ?? params.activeStyle;
   const meta = ROUTE_TYPE_META[activeStyle];
+  const savedPlaces = useMemo(
+    () => placesWithAddress(settings.savedPlaces),
+    [settings.savedPlaces],
+  );
 
   const originForMap =
     route.origin ?? null;
@@ -213,10 +222,10 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
     await refetchWithStops(newStops);
   };
 
-  const startNavigation = () => {
+  const beginNap = () => {
     if (stopLoading) return;
     if (!route.origin) {
-      Alert.alert('Location needed', 'Could not read your start point for navigation.');
+      Alert.alert('Location needed', 'Could not read your start point for the nap.');
       return;
     }
     navigation.navigate('Navigate', {
@@ -281,7 +290,7 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
                   </Text>
                 </View>
                 <Pressable onPress={() => setNavExpanded(v => !v)} style={styles.navSmallBtn}>
-                  <Text style={{ color: colors.cream }}>{navExpanded ? '▾' : '▴'}</Text>
+                  <Text style={{ color: colors.onPrimary }}>{navExpanded ? '▾' : '▴'}</Text>
                 </Pressable>
                 <Pressable
                   onPress={() => {
@@ -289,7 +298,7 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
                     setNavStep(0);
                   }}
                   style={styles.navSmallBtn}>
-                  <Text style={{ color: colors.cream, fontWeight: '700' }}>✕</Text>
+                  <Text style={{ color: colors.onPrimary, fontWeight: '700' }}>✕</Text>
                 </Pressable>
               </View>
               {navExpanded && (
@@ -342,7 +351,7 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
                   <Text
                     style={[
                       styles.navCtrlText,
-                      { color: colors.cream },
+                      { color: colors.onPrimary },
                     ]}>
                     Next →
                   </Text>
@@ -367,18 +376,18 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
           )}
 
           <Pressable
-            onPress={startNavigation}
+            onPress={beginNap}
             disabled={stopLoading}
             style={[styles.navCta, stopLoading && { opacity: 0.7 }]}>
             <Text style={styles.navCtaText}>
-              {stopLoading ? 'Updating route…' : '🧭 Start Navigation'}
+              {stopLoading ? 'Updating route…' : '🌙 Begin Nap'}
             </Text>
           </Pressable>
 
           <View>
             <View style={styles.suggestionsHeader}>
               <View>
-                <Text style={styles.sectionLabel}>3 ROUTE SUGGESTIONS</Text>
+                <Text style={styles.sectionLabel}>Alternate Route Suggestions</Text>
                 <Text style={styles.suggestionsSub}>
                   Ranked for your {durationMinutes} min nap
                 </Text>
@@ -399,7 +408,12 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
             <View style={{ gap: 8 }}>
               {sortedVariants.map((v, index) => {
                 const isActive = v.id === activeStyle;
-                const match = napMatchLabel(v.napMatchScore);
+                const match = napMatchLabel(v.napMatchScore, {
+                  good: colors.success,
+                  ok: colors.success,
+                  close: colors.warning,
+                  bad: colors.danger,
+                });
                 return (
                   <Pressable
                     key={`${v.id}-${refreshIndex}`}
@@ -412,11 +426,11 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
                       <Text style={styles.suggestionRankText}>{index + 1}</Text>
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.styleChipTitle}>
+                      <Text style={[styles.styleChipTitle, isActive && { color: colors.ink }]}>
                         {v.emoji} {v.label}
                         {isActive ? ' · selected' : ''}
                       </Text>
-                      <Text style={styles.styleChipDur}>
+                      <Text style={[styles.styleChipDur, isActive && { color: colors.ink }]}>
                         {v.durationText}
                         {v.summary ? ` · via ${v.summary}` : ''}
                       </Text>
@@ -462,6 +476,8 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
                 placeholder="Search address or place…"
                 icon="📍"
                 autoFocus
+                savedSuggestions={savedPlaces}
+                biasLocation={route.origin}
               />
               {extraStops.map((stop, i) => (
                 <View key={i} style={styles.stopChip}>
@@ -541,7 +557,8 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
   );
 }
 
-const styles = StyleSheet.create({
+function makeStyles(colors: ColorPalette) {
+  return StyleSheet.create({
   flex: { flex: 1 },
   topBar: {
     flexDirection: 'row',
@@ -554,7 +571,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.6)',
+    backgroundColor: colors.surfaceMuted,
     borderWidth: 1.5,
     borderColor: colors.lavenderBorder,
     alignItems: 'center',
@@ -568,7 +585,7 @@ const styles = StyleSheet.create({
   },
   topSub: { fontSize: 11, color: colors.purpleMuted, marginTop: 1 },
   durationPill: {
-    backgroundColor: 'rgba(255,255,255,0.6)',
+    backgroundColor: colors.surfaceMuted,
     borderWidth: 1.5,
     borderColor: colors.lavenderBorder,
     borderRadius: 999,
@@ -588,7 +605,7 @@ const styles = StyleSheet.create({
   mapFrame: {
     borderRadius: 24,
     overflow: 'hidden',
-    shadowColor: colors.purple,
+    shadowColor: colors.shadow,
     shadowOpacity: 0.18,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 4 },
@@ -600,16 +617,16 @@ const styles = StyleSheet.create({
     right: 16,
     bottom: 8,
     borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.97)',
+    backgroundColor: colors.surfaceGlassStrong,
     overflow: 'hidden',
-    shadowColor: colors.purple,
+    shadowColor: colors.shadow,
     shadowOpacity: 0.25,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 8 },
     elevation: 6,
   },
   navHeader: {
-    backgroundColor: colors.purple,
+    backgroundColor: colors.primary,
     padding: 14,
     flexDirection: 'row',
     alignItems: 'center',
@@ -624,17 +641,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   navInstruction: {
-    color: colors.cream,
+    color: colors.onPrimary,
     fontWeight: '700',
     fontSize: 15,
   },
   navMeta: {
-    color: 'rgba(255,248,240,0.7)',
+    color: colors.onPrimary,
     fontSize: 12,
     marginTop: 3,
   },
   navSmallBtn: {
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.18)',
     borderRadius: 8,
     paddingHorizontal: 8,
     paddingVertical: 6,
@@ -649,8 +666,8 @@ const styles = StyleSheet.create({
     borderLeftColor: 'transparent',
   },
   stepRowActive: {
-    backgroundColor: 'rgba(196,181,244,0.25)',
-    borderLeftColor: colors.purple,
+    backgroundColor: colors.lavenderWash,
+    borderLeftColor: colors.primary,
   },
   stepText: { fontSize: 13, color: colors.purple },
   stepDist: { fontSize: 11, color: colors.lavenderSoft, marginTop: 2 },
@@ -660,19 +677,19 @@ const styles = StyleSheet.create({
     gap: 8,
     padding: 10,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(196,181,244,0.3)',
+    borderTopColor: colors.lavenderBorder,
   },
   navCtrlBtn: {
     flex: 1,
     padding: 10,
     borderRadius: 12,
     borderWidth: 1.5,
-    borderColor: 'rgba(196,181,244,0.5)',
+    borderColor: colors.lavenderBorder,
     alignItems: 'center',
   },
   navCtrlPrimary: {
-    backgroundColor: colors.purple,
-    borderColor: colors.purple,
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
   },
   navCtrlText: {
     fontSize: 13,
@@ -688,7 +705,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: 'rgba(255,255,255,0.7)',
+    backgroundColor: colors.surfaceGlass,
     borderRadius: 16,
     padding: 12,
     borderWidth: 1,
@@ -700,6 +717,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     paddingVertical: 15,
     alignItems: 'center',
+    justifyContent: 'center',
     shadowColor: colors.gold,
     shadowOpacity: 0.5,
     shadowRadius: 10,
@@ -707,12 +725,14 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   navCtaText: {
-    color: colors.purple,
+    color: colors.ink,
     fontSize: 16,
     fontWeight: '800',
+    textAlign: 'center',
+    right: 10
   },
   sectionLabel: {
-    fontSize: 10,
+    fontSize: 16,
     fontWeight: '600',
     color: colors.lavenderSoft,
     letterSpacing: 0.5,
@@ -734,7 +754,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.75)',
+    backgroundColor: colors.surfaceGlass,
     borderWidth: 1.5,
     borderColor: colors.lavenderBorder,
   },
@@ -750,7 +770,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 12,
     borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.7)',
+    backgroundColor: colors.surfaceGlass,
     borderWidth: 1.5,
     borderColor: colors.lavenderBorder,
   },
@@ -784,7 +804,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 10,
     borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.7)',
+    backgroundColor: colors.surfaceGlass,
     borderWidth: 1.5,
     borderColor: colors.lavenderBorder,
     alignItems: 'center',
@@ -799,7 +819,7 @@ const styles = StyleSheet.create({
     color: colors.purple,
   },
   stopPanel: {
-    backgroundColor: 'rgba(255,255,255,0.92)',
+    backgroundColor: colors.surfaceGlassStrong,
     borderRadius: 16,
     padding: 14,
     borderWidth: 1.5,
@@ -818,7 +838,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 5,
     borderRadius: 8,
-    backgroundColor: 'rgba(196,181,244,0.15)',
+    backgroundColor: colors.inputBg,
   },
   stopChipText: { flex: 1, fontSize: 11, color: colors.purple },
   stopActions: { flexDirection: 'row', gap: 6 },
@@ -839,10 +859,10 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 8,
     borderRadius: 10,
-    backgroundColor: colors.purple,
+    backgroundColor: colors.primary,
     alignItems: 'center',
   },
-  stopAddText: { color: colors.cream, fontWeight: '700', fontSize: 12 },
+  stopAddText: { color: colors.onPrimary, fontWeight: '700', fontSize: 12 },
   persistentStop: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -857,7 +877,7 @@ const styles = StyleSheet.create({
   showTimerBtn: {
     padding: 12,
     borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.7)',
+    backgroundColor: colors.surfaceGlass,
     borderWidth: 1.5,
     borderColor: colors.lavenderBorder,
   },
@@ -869,9 +889,9 @@ const styles = StyleSheet.create({
   newRouteBtn: {
     padding: 14,
     borderRadius: 16,
-    backgroundColor: 'rgba(45,27,105,0.08)',
+    backgroundColor: colors.lavenderBorder,
     borderWidth: 1.5,
-    borderColor: 'rgba(45,27,105,0.2)',
+    borderColor: colors.error,
     alignItems: 'center',
   },
   newRouteText: {
@@ -879,4 +899,5 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.purple,
   },
-});
+  });
+}

@@ -2,13 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import MapView, {
+  Circle,
   Marker,
   Polyline,
   PROVIDER_GOOGLE,
@@ -16,8 +16,8 @@ import MapView, {
   type Region,
 } from 'react-native-maps';
 import { GOOGLE_MAPS_API_KEY } from '../config/maps';
-import type { RouteResult } from '../types/route';
-import { colors } from '../theme/colors';
+import type { LatLng as RouteLatLng, RouteAlert, RouteResult } from '../types/route';
+import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 import { decodePolyline } from '../utils/polyline';
 
 /** Street-level preview (~few blocks). Wider when an end pin is also shown. */
@@ -46,9 +46,56 @@ interface NapMapProps {
   followUser?: boolean;
   /** Full-bleed map without rounded corners / route badges. */
   fullBleed?: boolean;
+  /** Restricted-area alerts (military bases, route advisories). */
+  alerts?: RouteAlert[];
+  /** Roads-snapped path for smoother Navigate rendering. */
+  snappedPath?: RouteLatLng[] | null;
+  selectedAlertId?: string | null;
+  onAlertPress?: (alert: RouteAlert) => void;
 }
 
 type MapViewMode = 'map' | 'street';
+
+function haversineMeters(a: LatLng, b: LatLng): number {
+  const R = 6371000;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function pointNearAnyAlert(point: LatLng, alerts: RouteAlert[]): boolean {
+  return alerts.some(
+    alert =>
+      alert.kind === 'military' &&
+      haversineMeters(point, alert.coordinate) <= alert.radiusMeters,
+  );
+}
+
+/** Split path into contiguous runs that fall inside military alert radii. */
+function dangerSegments(path: LatLng[], alerts: RouteAlert[]): LatLng[][] {
+  const military = alerts.filter(a => a.kind === 'military');
+  if (path.length < 2 || military.length === 0) return [];
+
+  const segments: LatLng[][] = [];
+  let current: LatLng[] = [];
+
+  for (const point of path) {
+    if (pointNearAnyAlert(point, military)) {
+      current.push(point);
+    } else if (current.length > 0) {
+      if (current.length >= 2) segments.push(current);
+      current = [];
+    }
+  }
+  if (current.length >= 2) segments.push(current);
+  return segments;
+}
 
 async function fetchStreetViewUrl(
   lat: number,
@@ -76,7 +123,13 @@ export default function NapMap({
   showsUserLocation = false,
   followUser = false,
   fullBleed = false,
+  alerts = [],
+  snappedPath = null,
+  selectedAlertId = null,
+  onAlertPress,
 }: NapMapProps) {
+  const { colors, mapStyle } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const mapRef = useRef<MapView>(null);
   const isPreview = preview ?? (!route && !!origin);
   const [viewMode, setViewMode] = useState<MapViewMode>('map');
@@ -85,9 +138,14 @@ export default function NapMap({
     'idle' | 'loading' | 'ready' | 'unavailable'
   >('idle');
 
-  const path = useMemo(
-    () => (route?.polyline ? decodePolyline(route.polyline) : []),
-    [route?.polyline],
+  const path = useMemo(() => {
+    if (snappedPath && snappedPath.length >= 2) return snappedPath;
+    return route?.polyline ? decodePolyline(route.polyline) : [];
+  }, [route?.polyline, snappedPath]);
+
+  const restrictedSegments = useMemo(
+    () => dangerSegments(path, alerts),
+    [path, alerts],
   );
 
   const center = route?.origin ?? origin ?? { lat: 37.7749, lng: -122.4194 };
@@ -198,6 +256,11 @@ export default function NapMap({
     height === '100%' ? styles.wrapFlex : { height },
   ];
 
+  const pathCoords = path.map(p => ({
+    latitude: p.lat,
+    longitude: p.lng,
+  }));
+
   return (
     <View style={wrapStyle}>
       {showStreet ? (
@@ -221,10 +284,7 @@ export default function NapMap({
           rotateEnabled={fullBleed}
           pitchEnabled={false}
           mapType="standard"
-          // Android Google Maps styling is limited; keep default roadmap.
-          customMapStyle={
-            Platform.OS === 'android' && !fullBleed ? mapStyles : undefined
-          }>
+          customMapStyle={mapStyle}>
           {origin && !showsUserLocation && (
             <Marker
               coordinate={{ latitude: origin.lat, longitude: origin.lng }}
@@ -260,16 +320,78 @@ export default function NapMap({
               pinColor={colors.gold}
             />
           )}
-          {path.length > 1 && (
+          {pathCoords.length > 1 && (
+            <>
+              <Polyline
+                coordinates={pathCoords}
+                strokeColor={colors.routeGlow}
+                strokeWidth={12}
+                lineCap="round"
+                lineJoin="round"
+              />
+              <Polyline
+                coordinates={pathCoords}
+                strokeColor={colors.gold}
+                strokeWidth={5}
+                lineCap="round"
+                lineJoin="round"
+              />
+            </>
+          )}
+          {restrictedSegments.map((segment, i) => (
             <Polyline
-              coordinates={path.map(p => ({
+              key={`danger-${i}`}
+              coordinates={segment.map(p => ({
                 latitude: p.lat,
                 longitude: p.lng,
               }))}
-              strokeColor={colors.gold}
-              strokeWidth={5}
+              strokeColor={colors.danger}
+              strokeWidth={6}
+              lineCap="round"
+              lineJoin="round"
             />
-          )}
+          ))}
+          {alerts.map(alert => {
+            const selected = alert.id === selectedAlertId;
+            return (
+              <React.Fragment key={alert.id}>
+                <Circle
+                  center={{
+                    latitude: alert.coordinate.lat,
+                    longitude: alert.coordinate.lng,
+                  }}
+                  radius={
+                    selected ? alert.radiusMeters * 1.15 : alert.radiusMeters
+                  }
+                  fillColor={
+                    alert.kind === 'military'
+                      ? 'rgba(155,68,68,0.22)'
+                      : 'rgba(139,106,0,0.18)'
+                  }
+                  strokeColor={
+                    alert.kind === 'military' ? colors.danger : colors.warning
+                  }
+                  strokeWidth={selected ? 2.5 : 1.5}
+                />
+                <Marker
+                  coordinate={{
+                    latitude: alert.coordinate.lat,
+                    longitude: alert.coordinate.lng,
+                  }}
+                  title={
+                    alert.kind === 'military'
+                      ? `Restricted · ${alert.title}`
+                      : alert.title
+                  }
+                  description={alert.message}
+                  pinColor={
+                    alert.kind === 'military' ? colors.dangerSoft : colors.gold
+                  }
+                  onPress={() => onAlertPress?.(alert)}
+                />
+              </React.Fragment>
+            );
+          })}
         </MapView>
       )}
 
@@ -316,7 +438,7 @@ export default function NapMap({
 
       {loading && (
         <View style={styles.overlay}>
-          <ActivityIndicator color={colors.purple} />
+          <ActivityIndicator color={colors.primary} />
           <Text style={styles.overlayText}>Finding your route…</Text>
         </View>
       )}
@@ -345,111 +467,103 @@ export default function NapMap({
   );
 }
 
-const mapStyles = [
-  { elementType: 'geometry', stylers: [{ color: '#f0ecff' }] },
-  { elementType: 'labels.text.fill', stylers: [{ color: '#6B5A9E' }] },
-  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
-  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#c8dff0' }] },
-  { featureType: 'park', elementType: 'geometry', stylers: [{ color: '#d4edda' }] },
-  { featureType: 'poi', stylers: [{ visibility: 'off' }] },
-  { featureType: 'transit', stylers: [{ visibility: 'off' }] },
-];
-
-const styles = StyleSheet.create({
-  wrap: {
-    width: '100%',
-    borderRadius: 24,
-    overflow: 'hidden',
-    backgroundColor: '#e8e0ff',
-  },
-  wrapFullBleed: {
-    borderRadius: 0,
-    backgroundColor: '#dce3ea',
-  },
-  wrapFlex: {
-    flex: 1,
-  },
-  pickHint: {
-    position: 'absolute',
-    left: 10,
-    bottom: 10,
-    backgroundColor: 'rgba(255,248,240,0.94)',
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  pickHintText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.purple,
-  },
-  modeToggle: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    flexDirection: 'row',
-    backgroundColor: 'rgba(255,248,240,0.94)',
-    borderRadius: 999,
-    padding: 3,
-    gap: 2,
-  },
-  modeBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-  },
-  modeBtnActive: {
-    backgroundColor: colors.purple,
-  },
-  modeBtnDisabled: {
-    opacity: 0.55,
-  },
-  modeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.purple,
-  },
-  modeTextActive: {
-    color: colors.cream,
-  },
-  modeTextDisabled: {
-    color: colors.lavenderSoft,
-  },
-  overlay: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(240,236,255,0.75)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingHorizontal: 24,
-  },
-  overlayText: {
-    fontSize: 12,
-    color: colors.purpleMuted,
-    textAlign: 'center',
-  },
-  badgeRow: {
-    position: 'absolute',
-    left: 12,
-    right: 12,
-    bottom: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  badge: {
-    backgroundColor: 'rgba(255,248,240,0.92)',
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  badgeStrong: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.purple,
-  },
-  badgeMuted: {
-    fontSize: 11,
-    color: colors.purpleMuted,
-  },
-});
+function makeStyles(colors: ColorPalette) {
+  return StyleSheet.create({
+    wrap: {
+      width: '100%',
+      borderRadius: 24,
+      overflow: 'hidden',
+      backgroundColor: colors.mapBg,
+    },
+    wrapFullBleed: {
+      borderRadius: 0,
+      backgroundColor: colors.mapBgFull,
+    },
+    wrapFlex: {
+      flex: 1,
+    },
+    pickHint: {
+      position: 'absolute',
+      left: 10,
+      bottom: 10,
+      backgroundColor: colors.overlay,
+      borderRadius: 999,
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+    },
+    pickHintText: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: colors.purple,
+    },
+    modeToggle: {
+      position: 'absolute',
+      top: 10,
+      right: 10,
+      flexDirection: 'row',
+      backgroundColor: colors.overlay,
+      borderRadius: 999,
+      padding: 3,
+      gap: 2,
+    },
+    modeBtn: {
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 999,
+    },
+    modeBtnActive: {
+      backgroundColor: colors.primary,
+    },
+    modeBtnDisabled: {
+      opacity: 0.55,
+    },
+    modeText: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: colors.purple,
+    },
+    modeTextActive: {
+      color: colors.onPrimary,
+    },
+    modeTextDisabled: {
+      color: colors.lavenderSoft,
+    },
+    overlay: {
+      ...StyleSheet.absoluteFill,
+      backgroundColor: colors.surfaceGlass,
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+      paddingHorizontal: 24,
+    },
+    overlayText: {
+      fontSize: 12,
+      color: colors.purpleMuted,
+      textAlign: 'center',
+    },
+    badgeRow: {
+      position: 'absolute',
+      left: 12,
+      right: 12,
+      bottom: 12,
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      gap: 8,
+    },
+    badge: {
+      backgroundColor: colors.overlay,
+      borderRadius: 999,
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+    },
+    badgeStrong: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: colors.purple,
+    },
+    badgeMuted: {
+      fontSize: 11,
+      color: colors.purpleMuted,
+    },
+  });
+}

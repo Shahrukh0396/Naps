@@ -15,8 +15,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
   ) -> Bool {
-    // Must be first — Google Maps SDK for iOS
-    GMSServices.provideAPIKey("AIzaSyC0V0SOJrGZ6-6-L0Q6CKpAshTFu889eQE")
+    // Must be first — Google Maps SDK for iOS (key from .env via react-native-config)
+    let mapsKey = RNCConfig.env(for: "GOOGLE_MAPS_API_KEY") ?? ""
+    GMSServices.provideAPIKey(mapsKey)
 
     let delegate = ReactNativeDelegate()
     let factory = RCTReactNativeFactory(delegate: delegate)
