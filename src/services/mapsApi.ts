@@ -1,6 +1,12 @@
 import { ROUTE_TYPE_META } from '../constants/content';
 import { calcNapMatch } from '../mocks/routes';
-import type { RouteResult, RouteStyleId, RouteVariant } from '../types/route';
+import type {
+  LatLng,
+  RestrictedRouteOption,
+  RouteResult,
+  RouteStyleId,
+  RouteVariant,
+} from '../types/route';
 import { findDirectRoute, findRoute } from './findRoute';
 import { RouteError } from './routeError';
 
@@ -13,7 +19,6 @@ const ALL_STYLES: RouteStyleId[] = [
   'fewer-lights',
 ];
 
-/** Pick up to 3 styles for this suggestion batch. Preferred style leads on first load. */
 function pickSuggestionStyles(
   preferred: RouteStyleId,
   refreshIndex: number,
@@ -21,7 +26,6 @@ function pickSuggestionStyles(
   if (refreshIndex === 0) {
     return [preferred, ...ALL_STYLES.filter(s => s !== preferred)].slice(0, 3);
   }
-  // Rotate which styles appear so refresh feels like a new set
   const start = refreshIndex % ALL_STYLES.length;
   const rotated = [
     ...ALL_STYLES.slice(start),
@@ -30,18 +34,64 @@ function pickSuggestionStyles(
   return rotated.slice(0, 3);
 }
 
+function parseOriginCoord(origin: string): LatLng | null {
+  const parts = origin.split(',');
+  if (parts.length !== 2) return null;
+  const lat = parseFloat(parts[0]);
+  const lng = parseFloat(parts[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return { lat, lng };
+}
+
+function emptyMapRoute(
+  origin: LatLng,
+  destination: string | null,
+): RouteResult {
+  return {
+    polyline: '',
+    durationSeconds: 0,
+    durationText: '—',
+    summary: '',
+    isLoop: !destination,
+    destination,
+    streetViewUrl: null,
+    origin,
+    waypoint: origin,
+    allWaypoints: [],
+    extraStops: [],
+    legs: [],
+  };
+}
+
+function toVariant(
+  styleId: RouteStyleId,
+  data: RouteResult,
+  durationMinutes: number,
+): RouteVariant {
+  const meta = ROUTE_TYPE_META[styleId];
+  const mins = Math.round(data.durationSeconds / 60);
+  return {
+    id: styleId,
+    emoji: meta.emoji,
+    label: meta.label,
+    sublabel: meta.sublabel,
+    durationMinutes: mins,
+    durationText: data.durationText,
+    summary: data.summary,
+    napMatchScore: calcNapMatch(mins, durationMinutes),
+    isLoop: data.isLoop,
+  };
+}
+
 export interface RouteSuggestionsResult {
   variants: RouteVariant[];
   primary: RouteResult;
   activeStyle: RouteStyleId;
   routesById: Partial<Record<RouteStyleId, RouteResult>>;
   refreshIndex: number;
+  restrictedOptions: RestrictedRouteOption[];
 }
 
-/**
- * Returns exactly up to 3 nap-matched route suggestions.
- * Pass a higher refreshIndex to get alternate paths (bearing rotation + style mix).
- */
 export async function findRouteSuggestions(params: {
   origin: string;
   destination: string | null;
@@ -54,58 +104,96 @@ export async function findRouteSuggestions(params: {
   const extraStops = params.extraStops ?? [];
   const styles = pickSuggestionStyles(params.preferredStyle, refreshIndex);
 
-  const results = await Promise.allSettled(
-    styles.map(styleId =>
-      findRoute({
-        origin: params.origin,
-        destination: params.destination,
-        durationMinutes: params.durationMinutes,
-        routeTypes: [styleId],
-        extraStops,
-        variation: refreshIndex,
-      }),
-    ),
-  );
-
   const variants: RouteVariant[] = [];
   const routesById: Partial<Record<RouteStyleId, RouteResult>> = {};
+  const restrictedOptions: RestrictedRouteOption[] = [];
 
-  results.forEach((result, idx) => {
-    const styleId = styles[idx];
-    const meta = ROUTE_TYPE_META[styleId];
-    if (result.status === 'fulfilled') {
+  const collect = async (styleIds: RouteStyleId[], variation: number) => {
+    const pending = styleIds.filter(
+      id => !routesById[id] && !restrictedOptions.some(o => o.styleId === id),
+    );
+    if (pending.length === 0) return;
+
+    const results = await Promise.allSettled(
+      pending.map(styleId =>
+        findRoute({
+          origin: params.origin,
+          destination: params.destination,
+          durationMinutes: params.durationMinutes,
+          routeTypes: [styleId],
+          extraStops,
+          variation,
+          avoidRestricted: true,
+        }),
+      ),
+    );
+
+    results.forEach((result, idx) => {
+      const styleId = pending[idx];
+      if (result.status !== 'fulfilled') return;
       const data = { ...result.value, destination: params.destination };
-      const mins = Math.round(data.durationSeconds / 60);
+      const variant = toVariant(styleId, data, params.durationMinutes);
+      const restrictedCount = data.restrictedNear?.count ?? 0;
+
+      if (restrictedCount > 0) {
+        restrictedOptions.push({
+          styleId,
+          route: data,
+          variant,
+          restrictedCount,
+          restrictedTitles: data.restrictedNear?.titles ?? [],
+        });
+        return;
+      }
+
       routesById[styleId] = data;
-      variants.push({
-        id: styleId,
-        emoji: meta.emoji,
-        label: meta.label,
-        sublabel: meta.sublabel,
-        durationMinutes: mins,
-        durationText: data.durationText,
-        summary: data.summary,
-        napMatchScore: calcNapMatch(mins, params.durationMinutes),
-        isLoop: data.isLoop,
-      });
+      variants.push(variant);
+    });
+  };
+
+  await collect(styles, refreshIndex);
+
+  if (variants.length < 3) {
+    await collect(
+      ALL_STYLES.filter(id => !routesById[id]),
+      refreshIndex + 1,
+    );
+  }
+
+  if (variants.length < 3) {
+    await collect(
+      ALL_STYLES.filter(id => !routesById[id]),
+      refreshIndex + 2,
+    );
+  }
+
+  restrictedOptions.sort((a, b) => {
+    if (a.restrictedCount !== b.restrictedCount) {
+      return a.restrictedCount - b.restrictedCount;
     }
+    return b.variant.napMatchScore - a.variant.napMatchScore;
   });
 
   if (variants.length === 0) {
-    const firstReject = results.find(r => r.status === 'rejected') as
-      | PromiseRejectedResult
-      | undefined;
-    const msg =
-      firstReject?.reason instanceof RouteError
-        ? firstReject.reason.message
-        : 'Could not calculate any routes. Try a different address or route type.';
-    throw new RouteError(msg);
+    const origin = parseOriginCoord(params.origin);
+    if (!origin) {
+      throw new RouteError(
+        'Could not calculate a route. Try a different address or route type.',
+      );
+    }
+    return {
+      variants: [],
+      primary: emptyMapRoute(origin, params.destination),
+      activeStyle: params.preferredStyle,
+      routesById: {},
+      refreshIndex,
+      restrictedOptions,
+    };
   }
 
   const ranked = [...variants].sort((a, b) => b.napMatchScore - a.napMatchScore);
   const top3 = ranked.slice(0, 3);
 
-  // Prefer user's preferred style if it made the top 3 and this is the first batch
   let activeStyle = top3[0].id;
   if (
     refreshIndex === 0 &&
@@ -116,7 +204,9 @@ export async function findRouteSuggestions(params: {
 
   const primary = routesById[activeStyle];
   if (!primary) {
-    throw new RouteError('Could not calculate a route. Try a different address or route type.');
+    throw new RouteError(
+      'Could not calculate a route. Try a different address or route type.',
+    );
   }
 
   return {
@@ -125,10 +215,10 @@ export async function findRouteSuggestions(params: {
     activeStyle,
     routesById,
     refreshIndex,
+    restrictedOptions,
   };
 }
 
-/** @deprecated use findRouteSuggestions — kept for any leftover callers */
 export async function findAllRouteVariants(params: {
   origin: string;
   destination: string | null;

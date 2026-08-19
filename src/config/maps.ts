@@ -5,7 +5,7 @@
  * - Maps SDK for iOS (bundle id com.naps.app)
  * - Routes API (preferred for traffic-aware ETAs)
  * - Directions API, Geocoding API, Places API (legacy autocomplete)
- * - Places API (New) — Text Search along route for military / restricted areas
+ * - Places API (New) — Text Search along route for military bases (one of several unsafe-area sources)
  * - Roads API — snapToRoads for Navigate map polish + alert proximity
  *
  * Enable billing + Routes API so TRAFFIC_AWARE_OPTIMAL ETAs can match the

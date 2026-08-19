@@ -18,7 +18,12 @@ export interface RouteLeg {
   steps: NavStep[];
 }
 
-export type RouteAlertKind = 'military' | 'route_restriction';
+export type RouteAlertKind =
+  | 'military'
+  | 'crime'
+  | 'fire'
+  | 'incident'
+  | 'route_restriction';
 
 export interface RouteAlert {
   id: string;
@@ -53,6 +58,19 @@ export interface RouteResult {
   /** True when Routes API reports ignored travel restrictions on this path. */
   routeRestrictionsPartiallyIgnored?: boolean;
   alerts?: RouteAlert[];
+  /** Unsafe places this path still passes near (bases, crime, fire, other incidents). */
+  restrictedNear?: {
+    count: number;
+    titles: string[];
+  };
+}
+
+export interface RestrictedRouteOption {
+  styleId: RouteStyleId;
+  route: RouteResult;
+  variant: RouteVariant;
+  restrictedCount: number;
+  restrictedTitles: string[];
 }
 
 export interface RouteVariant {

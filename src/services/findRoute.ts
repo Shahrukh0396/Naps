@@ -1,5 +1,9 @@
 import { GOOGLE_MAPS_API_KEY } from '../config/maps';
-import type { RouteResult, RouteStyleId } from '../types/route';
+import type { LatLng, RouteResult, RouteStyleId } from '../types/route';
+import {
+  bypassWaypointForRestricted,
+  safetyHazardsOnRoute,
+} from './restrictedAreas';
 import { RouteError } from './routeError';
 import { computeTrafficAwareDrive, type TrafficAwareRoute } from './routesApi';
 
@@ -18,9 +22,97 @@ export interface FindRouteParams {
    * Mid-drive extend recalcs may pass a lower value so remaining nap time is respected.
    */
   minDurationMinutes?: number;
+  /**
+   * Drop / rebuild routes that pass near restricted or unsafe areas
+   * (bases, crime, fire, other incidents). Default true for search.
+   */
+  avoidRestricted?: boolean;
 }
 
 export async function findRoute(params: FindRouteParams): Promise<RouteResult> {
+  const avoidRestricted = params.avoidRestricted !== false;
+  const maxAttempts = avoidRestricted ? 4 : 1;
+  const baseStops = params.extraStops ?? [];
+  let extraStops = baseStops;
+  let best: { route: RouteResult; count: number; titles: string[] } | null =
+    null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const result = await computeNapRoute({
+      ...params,
+      extraStops,
+      variation: (params.variation ?? 0) + attempt,
+    });
+
+    if (!avoidRestricted) return result;
+
+    const dest = parseCoord(result.destination) ?? result.origin;
+    const hazards = await safetyHazardsOnRoute(
+      result.polyline,
+      result.origin,
+      dest,
+    );
+
+    if (hazards.length === 0) {
+      if (__DEV__ && attempt > 0) {
+        console.log(`[route] clear of unsafe areas after ${attempt + 1} attempts`);
+      }
+      return result;
+    }
+
+    if (__DEV__) {
+      console.log(
+        `[route] rejected unsafe path attempt=${attempt + 1} ` +
+          `near ${hazards.map(a => a.title).join(', ')}`,
+      );
+    }
+
+    const titles = [...new Set(hazards.map(a => a.title))];
+    if (!best || hazards.length < best.count) {
+      best = { route: result, count: hazards.length, titles };
+    }
+
+    const bypass = bypassWaypointForRestricted(
+      result.origin,
+      dest,
+      hazards,
+      attempt,
+    );
+    extraStops = bypass ? [bypass, ...baseStops] : baseStops;
+  }
+
+  if (best) {
+    if (__DEV__) {
+      console.log(
+        `[route] using least-unsafe path near ${best.count} area(s)`,
+      );
+    }
+    return {
+      ...best.route,
+      restrictedNear: {
+        count: best.count,
+        titles: best.titles,
+      },
+    };
+  }
+
+  throw new RouteError(
+    'Could not calculate route. Try a different address or route type.',
+  );
+}
+
+function parseCoord(value: string | null | undefined): LatLng | null {
+  if (!value) return null;
+  const parts = value.split(',');
+  if (parts.length !== 2) return null;
+  const lat = parseFloat(parts[0]);
+  const lng = parseFloat(parts[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { lat, lng };
+}
+
+async function computeNapRoute(params: FindRouteParams): Promise<RouteResult> {
   const {
     origin,
     destination = null,

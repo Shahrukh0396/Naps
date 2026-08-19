@@ -1,6 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,8 +11,10 @@ import GradientBackground from '../components/GradientBackground';
 import NapMap from '../components/NapMap';
 import NapTimer from '../components/NapTimer';
 import PlacesAutocomplete from '../components/PlacesAutocomplete';
+import RestrictedRoutesAlert from '../components/RestrictedRoutesAlert';
 import SpotifyCard from '../components/SpotifyCard';
 import { ROUTE_TYPE_META } from '../constants/content';
+import { useAppAlert } from '../context/AlertContext';
 import {
   placesWithAddress,
   useNapSettings,
@@ -21,8 +22,14 @@ import {
 import { calcNapMatch, napMatchLabel } from '../mocks/routes';
 import { findRoute, findRouteSuggestions, RouteError } from '../services/mapsApi';
 import type { ResultsScreenProps } from '../navigation/types';
-import type { RouteResult, RouteStyleId, RouteVariant } from '../types/route';
+import type {
+  RestrictedRouteOption,
+  RouteResult,
+  RouteStyleId,
+  RouteVariant,
+} from '../types/route';
 import { useTheme, type ColorPalette } from '../theme/ThemeContext';
+import { openRouteInGoogleMaps } from '../utils/openGoogleMaps';
 
 function dirIcon(instruction: string): string {
   const t = instruction.toLowerCase();
@@ -40,6 +47,7 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const { settings } = useNapSettings();
+  const showAlert = useAppAlert();
   const params = navRoute.params;
 
   const [route, setRoute] = useState<RouteResult>(params.route);
@@ -65,6 +73,15 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
   const [addStopOpen, setAddStopOpen] = useState(false);
   const [stopInput, setStopInput] = useState('');
   const [stopLoading, setStopLoading] = useState(false);
+  const [startingNap, setStartingNap] = useState(false);
+  const [restrictedOptions, setRestrictedOptions] = useState<
+    RestrictedRouteOption[]
+  >(params.restrictedOptions ?? []);
+  const [restrictedAlertOpen, setRestrictedAlertOpen] = useState(
+    (params.restrictedOptions?.length ?? 0) > 0 && !params.route.polyline,
+  );
+
+  const hasChosenRoute = Boolean(route.polyline);
 
   const durationMinutes = params.durationMinutes;
   const destination = params.destination;
@@ -164,6 +181,10 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
       setVariants(result.variants);
       setRoutesById(result.routesById);
       setActiveStyle(result.activeStyle);
+      setRestrictedOptions(result.restrictedOptions);
+      setRestrictedAlertOpen(
+        result.variants.length === 0 && result.restrictedOptions.length > 0,
+      );
       setRoute({
         ...result.primary,
         destination,
@@ -222,18 +243,71 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
     await refetchWithStops(newStops);
   };
 
-  const beginNap = () => {
-    if (stopLoading) return;
-    if (!route.origin) {
-      Alert.alert('Location needed', 'Could not read your start point for the nap.');
-      return;
-    }
+  const applyRestrictedOption = (option: RestrictedRouteOption) => {
+    setActiveStyle(option.styleId);
+    setRoute({
+      ...option.route,
+      destination,
+      extraStops: extraStopsRef.current,
+    });
+    setRoutesById(prev => ({ ...prev, [option.styleId]: option.route }));
+    setVariants(prev => {
+      if (prev.some(v => v.id === option.styleId)) {
+        return prev.map(v => (v.id === option.styleId ? option.variant : v));
+      }
+      return [option.variant, ...prev];
+    });
+    setRestrictedAlertOpen(false);
+  };
+
+  const goToNavigate = (napStarted: boolean) => {
     navigation.navigate('Navigate', {
       route,
       durationMinutes,
       destinationLabel: destination,
       activeStyle,
+      napStarted,
     });
+  };
+
+  const openNapDetails = () => {
+    if (stopLoading || startingNap || !hasChosenRoute) return;
+    if (!route.origin) {
+      showAlert({
+        title: 'Location needed',
+        message: 'Could not read your start point for the nap.',
+        tone: 'warning',
+      });
+      return;
+    }
+    goToNavigate(false);
+  };
+
+  const beginNap = async () => {
+    if (stopLoading || startingNap || !hasChosenRoute) return;
+    if (!route.origin) {
+      showAlert({
+        title: 'Location needed',
+        message: 'Could not read your start point for the nap.',
+        tone: 'warning',
+      });
+      return;
+    }
+
+    setStartingNap(true);
+    try {
+      await openRouteInGoogleMaps(route);
+    } catch {
+      showAlert({
+        title: 'Could not open Google Maps',
+        message:
+          'Starting your nap in the app. You can open Maps from the next screen.',
+        tone: 'warning',
+      });
+    } finally {
+      setStartingNap(false);
+    }
+    goToNavigate(true);
   };
 
   const sortedVariants = variants;
@@ -251,16 +325,23 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
           </Pressable>
           <View style={{ flex: 1 }}>
             <Text style={styles.topTitle}>
-              {meta.emoji} {meta.label} route
+              {hasChosenRoute
+                ? `${meta.emoji} ${meta.label} route`
+                : 'Choose a nap route'}
             </Text>
             <Text style={styles.topSub}>
-              {route.durationText} {route.isLoop ? 'loop' : 'drive'} · via{' '}
-              {route.summary || 'local roads'}
+              {hasChosenRoute
+                ? `${route.durationText} ${route.isLoop ? 'loop' : 'drive'} · via ${
+                    route.summary || 'local roads'
+                  }`
+                : 'Empty map · pick a safer loop'}
             </Text>
           </View>
           <View style={styles.durationPill}>
             <Text style={styles.durationPillText}>
-              {Math.round(route.durationSeconds / 60)} min
+              {hasChosenRoute
+                ? `${Math.round(route.durationSeconds / 60)} min`
+                : '—'}
             </Text>
           </View>
         </View>
@@ -269,9 +350,9 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
         <View style={styles.mapSection}>
           <View style={styles.mapFrame}>
             <NapMap
-              height={240}
+              height={320}
               origin={originForMap}
-              route={route}
+              route={hasChosenRoute ? route : null}
               loading={routeLoading}
               error={null}
             />
@@ -377,10 +458,30 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
 
           <Pressable
             onPress={beginNap}
-            disabled={stopLoading}
-            style={[styles.navCta, stopLoading && { opacity: 0.7 }]}>
+            disabled={stopLoading || startingNap || !hasChosenRoute}
+            style={[
+              styles.navCta,
+              (stopLoading || startingNap || !hasChosenRoute) && { opacity: 0.7 },
+              { backgroundColor: colors.gold },
+            ]}>
+            <Text style={[styles.navCtaText, { color: colors.ink }]}>
+              {startingNap
+                ? 'Opening Google Maps…'
+                : hasChosenRoute
+                  ? 'Begin Nap'
+                  : 'Choose a route first'}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={openNapDetails}
+            disabled={stopLoading || startingNap || !hasChosenRoute}
+            style={[
+              styles.navCta,
+              (stopLoading || startingNap || !hasChosenRoute) && { opacity: 0.7 },
+            ]}>
             <Text style={styles.navCtaText}>
-              {stopLoading ? 'Updating route…' : '🌙 Begin Nap'}
+              {stopLoading ? 'Updating route…' : 'View more details'}
             </Text>
           </Pressable>
 
@@ -441,6 +542,20 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
                   </Pressable>
                 );
               })}
+              {sortedVariants.length === 0 && restrictedOptions.length > 0 && (
+                <Pressable
+                  onPress={() => setRestrictedAlertOpen(true)}
+                  style={styles.suggestionCard}>
+                  <Text style={styles.styleChipTitle}>
+                    View less-restricted routes
+                  </Text>
+                  <Text style={styles.styleChipDur}>
+                    {restrictedOptions.length} option
+                    {restrictedOptions.length === 1 ? '' : 's'} still near
+                    restricted areas or active incidents
+                  </Text>
+                </Pressable>
+              )}
             </View>
           </View>
 
@@ -546,13 +661,19 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
           
           {/* Phase - 2  <SpotifyCard durationMinutes={durationMinutes} /> */}
 
-          <Pressable
+          {/* <Pressable
             onPress={() => navigation.navigate('MainTabs', { screen: 'Home' })}
             style={styles.newRouteBtn}>
             <Text style={styles.newRouteText}>← Plan a new route</Text>
-          </Pressable>
+          </Pressable> */}
         </ScrollView>
       </View>
+      <RestrictedRoutesAlert
+        visible={restrictedAlertOpen}
+        options={restrictedOptions}
+        onSelect={applyRestrictedOption}
+        onDismiss={() => setRestrictedAlertOpen(false)}
+      />
     </GradientBackground>
   );
 }
@@ -577,7 +698,7 @@ function makeStyles(colors: ColorPalette) {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  backArrow: { fontSize: 18, color: colors.purple, fontWeight: '700' },
+  backArrow: { fontSize: 18, color: colors.purple, fontWeight: '700', bottom: 3 },
   topTitle: {
     fontSize: 16,
     fontWeight: '700',
@@ -713,8 +834,8 @@ function makeStyles(colors: ColorPalette) {
   },
   errorText: { flex: 1, fontSize: 12, color: colors.purple },
   navCta: {
-    backgroundColor: colors.gold,
-    borderRadius: 18,
+    backgroundColor: colors.ink,
+    borderRadius: 25,
     paddingVertical: 15,
     alignItems: 'center',
     justifyContent: 'center',
@@ -722,10 +843,10 @@ function makeStyles(colors: ColorPalette) {
     shadowOpacity: 0.5,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
-    elevation: 3,
+    elevation: 10,
   },
   navCtaText: {
-    color: colors.ink,
+    color: colors.white,
     fontSize: 16,
     fontWeight: '800',
     textAlign: 'center',

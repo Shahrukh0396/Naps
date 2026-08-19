@@ -218,7 +218,8 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
           : `${endLocation.lat},${endLocation.lng}`;
       const originStr = `${gpsLocation.lat},${gpsLocation.lng}`;
 
-      const { variants, primary, activeStyle } = await findRouteSuggestions({
+      const { variants, primary, activeStyle, restrictedOptions } =
+        await findRouteSuggestions({
         origin: originStr,
         durationMinutes: activeDuration,
         destination,
@@ -235,6 +236,7 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
         destination: destination ? endLabel || destination : null,
         preferredStyle: activeRoute,
         originLabel: 'Current location',
+        restrictedOptions,
       });
     } catch (err) {
       setError(

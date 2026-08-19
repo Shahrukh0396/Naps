@@ -44,6 +44,10 @@ export const NOTIFY_OPTIONS = [
   { label: 'At end', value: 0 },
 ] as const;
 
+export const COMPANY_TAGLINE = 'Powered by Linton Tech LLC';
+export const COMPANY_COPYRIGHT = '© 2026';
+export const PRIVACY_POLICY_URL = 'https://vsirj7j0qh.c37.airoapp.ai/privacy';
+
 export const SUPPORT_FAQS = [
   {
     q: 'How does Naps pick a route?',
@@ -55,7 +59,7 @@ export const SUPPORT_FAQS = [
   },
   {
     q: 'Can I open the route in Google Maps?',
-    a: 'Yes. After you find a route, tap Nap Begins to open the in-app nap map and timer. Use the Open / Maps button on that screen anytime you want turn-by-turn in Google Maps. Extend updates the route while the timer stays in the app.',
+    a: 'Yes. On the route screen, tap Begin Nap — that opens the selected route in the Google Maps app first, then starts the in-app timer. View more details opens the nap map without leaving the app. Extend updates the route while the timer stays in Naps.',
   },
   {
     q: 'What is the nap timer for?',

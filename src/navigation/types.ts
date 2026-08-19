@@ -1,7 +1,7 @@
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import type { CompositeScreenProps, NavigatorScreenParams } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { RouteResult, RouteStyleId, RouteVariant } from '../types/route';
+import type { RestrictedRouteOption, RouteResult, RouteStyleId, RouteVariant } from '../types/route';
 
 export type MainTabParamList = {
   Home: undefined;
@@ -20,12 +20,15 @@ export type RootStackParamList = {
     destination: string | null;
     originLabel: string;
     preferredStyle: RouteStyleId;
+    restrictedOptions?: RestrictedRouteOption[];
   };
   Navigate: {
     route: RouteResult;
     durationMinutes: number;
     destinationLabel: string | null;
     activeStyle: RouteStyleId;
+    /** True when Results already opened Google Maps and started the nap. */
+    napStarted?: boolean;
   };
   About: undefined;
   Privacy: undefined;

@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
   PermissionsAndroid,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -13,10 +13,17 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import NapMap from '../components/NapMap';
 import NapTimer from '../components/NapTimer';
 import { ROUTE_TYPE_META } from '../constants/content';
+import { useAppAlert } from '../context/AlertContext';
 import { useNapSettings } from '../context/SettingsContext';
 import type { NavigateScreenProps } from '../navigation/types';
 import { findDirectRoute, findRoute, RouteError } from '../services/mapsApi';
-import { buildRouteAlerts } from '../services/restrictedAreas';
+import {
+  buildRouteAlerts,
+  bypassWaypointForRestricted,
+  countSafetyHazards,
+  hazardLabel,
+  isSafetyHazard,
+} from '../services/restrictedAreas';
 import type { LatLng, RouteAlert, RouteResult } from '../types/route';
 import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 import { openRouteInGoogleMaps } from '../utils/openGoogleMaps';
@@ -90,81 +97,26 @@ function resolveEndDestination(
   return formatCoord(route.origin.lat, route.origin.lng);
 }
 
+function dirIcon(instruction: string): string {
+  const t = instruction.toLowerCase();
+  if (t.includes('left')) return '↰';
+  if (t.includes('right')) return '↱';
+  if (t.includes('u-turn') || t.includes('uturn')) return '↩';
+  if (t.includes('roundabout') || t.includes('circle')) return '↻';
+  if (t.includes('merge') || t.includes('ramp') || t.includes('exit')) return '↗';
+  if (t.includes('arrive') || t.includes('destination')) return '📍';
+  return '↑';
+}
+
 function alertBannerText(alerts: RouteAlert[]): string {
-  const military = alerts.filter(a => a.kind === 'military');
-  if (military.length > 0) {
-    const first = military[0].title;
-    const extra = military.length - 1;
-    return extra > 0
-      ? `Restricted area ahead · ${first} · +${extra} more`
-      : `Restricted area ahead · ${first}`;
-  }
-  return alerts[0]?.message || 'Route restriction advisory on this path';
-}
-
-function toRad(deg: number): number {
-  return (deg * Math.PI) / 180;
-}
-
-function toDeg(rad: number): number {
-  return (rad * 180) / Math.PI;
-}
-
-function bearingDegrees(from: LatLng, to: LatLng): number {
-  const φ1 = toRad(from.lat);
-  const φ2 = toRad(to.lat);
-  const Δλ = toRad(to.lng - from.lng);
-  const y = Math.sin(Δλ) * Math.cos(φ2);
-  const x =
-    Math.cos(φ1) * Math.sin(φ2) -
-    Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
-  return (toDeg(Math.atan2(y, x)) + 360) % 360;
-}
-
-function offsetLatLng(
-  origin: LatLng,
-  bearingDeg: number,
-  distanceMeters: number,
-): LatLng {
-  const R = 6371000;
-  const δ = distanceMeters / R;
-  const θ = toRad(bearingDeg);
-  const φ1 = toRad(origin.lat);
-  const λ1 = toRad(origin.lng);
-  const φ2 = Math.asin(
-    Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ),
-  );
-  const λ2 =
-    λ1 +
-    Math.atan2(
-      Math.sin(θ) * Math.sin(δ) * Math.cos(φ1),
-      Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2),
-    );
-  return { lat: toDeg(φ2), lng: toDeg(λ2) };
-}
-
-/** Via point ~2.5km off the restricted area, perpendicular to the drive. */
-function bypassWaypointForAlerts(
-  here: LatLng,
-  destination: LatLng,
-  alerts: RouteAlert[],
-  attempt: number,
-): string | null {
-  const military = alerts.filter(a => a.kind === 'military');
-  if (military.length === 0) return null;
-  const target = military[attempt % military.length];
-  const routeBearing = bearingDegrees(here, destination);
-  const side = attempt % 2 === 0 ? -90 : 90;
-  const bypass = offsetLatLng(
-    target.coordinate,
-    (routeBearing + side + 360) % 360,
-    Math.max(2500, target.radiusMeters + 1500),
-  );
-  return formatCoord(bypass.lat, bypass.lng);
-}
-
-function countMilitaryAlerts(alerts: RouteAlert[]): number {
-  return alerts.filter(a => a.kind === 'military').length;
+  const hazards = alerts.filter(isSafetyHazard);
+  const lead = hazards[0] ?? alerts[0];
+  if (!lead) return 'Route restriction advisory on this path';
+  const extra = Math.max(0, (hazards.length || alerts.length) - 1);
+  const kind = hazardLabel(lead.kind);
+  return extra > 0
+    ? `${kind} ahead · ${lead.title} · +${extra} more`
+    : `${kind} ahead · ${lead.title}`;
 }
 
 export default function NavigateScreen({ navigation, route: navRoute }: NavigateScreenProps) {
@@ -172,17 +124,19 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const { settings } = useNapSettings();
+  const showAlert = useAppAlert();
   const {
     route: initialRoute,
     durationMinutes: initialDuration,
     destinationLabel,
     activeStyle,
+    napStarted = false,
   } = navRoute.params;
   const meta = ROUTE_TYPE_META[activeStyle];
 
   const [route, setRoute] = useState(initialRoute);
   const [durationMinutes, setDurationMinutes] = useState(initialDuration);
-  const [mapsOpened, setMapsOpened] = useState(false);
+  const [mapsOpened, setMapsOpened] = useState(napStarted);
   const [recalculating, setRecalculating] = useState(false);
   const [headingHome, setHeadingHome] = useState(false);
   const [recalcError, setRecalcError] = useState<string | null>(null);
@@ -190,6 +144,9 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
   const [snappedPath, setSnappedPath] = useState<LatLng[] | null>(null);
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
   const [findingAlt, setFindingAlt] = useState(false);
+  const [navActive, setNavActive] = useState(false);
+  const [navExpanded, setNavExpanded] = useState(false);
+  const [navStep, setNavStep] = useState(0);
 
   const homeOriginRef = useRef(initialRoute.origin);
   const extendCountRef = useRef(0);
@@ -217,6 +174,13 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     [alerts, selectedAlertId],
   );
 
+  const allNavSteps = useMemo(
+    () => route.legs.flatMap(leg => leg.steps),
+    [route],
+  );
+  const safeNavStep = Math.min(navStep, Math.max(0, allNavSteps.length - 1));
+  const currentNavStep = allNavSteps[safeNavStep] ?? null;
+
   useEffect(() => {
     let cancelled = false;
     setSelectedAlertId(null);
@@ -226,6 +190,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
         routeRestrictionsPartiallyIgnored:
           route.routeRestrictionsPartiallyIgnored,
         origin: route.origin,
+        destination: endPin,
       });
       if (cancelled) return;
       setAlerts(result.alerts);
@@ -244,7 +209,15 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     route.routeRestrictionsPartiallyIgnored,
     route.origin.lat,
     route.origin.lng,
+    endPin?.lat,
+    endPin?.lng,
   ]);
+
+  useEffect(() => {
+    setNavStep(0);
+    const hasSteps = route.legs.some(leg => leg.steps.length > 0);
+    if (!hasSteps) setNavActive(false);
+  }, [route.polyline]);
 
   /** Opens Google Maps only when the user taps the Maps button. */
   const handleOpenMaps = async () => {
@@ -252,7 +225,11 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
       await openRouteInGoogleMaps(route);
       setMapsOpened(true);
     } catch {
-      Alert.alert('Could not open Google Maps');
+      showAlert({
+        title: 'Could not open Google Maps',
+        message: 'Try again when you have a signal, or use the in-app map.',
+        tone: 'warning',
+      });
     }
   };
 
@@ -306,16 +283,17 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
               ? err.message
               : 'Could not rebuild the nap route.';
         setRecalcError(message);
-        Alert.alert(
-          'Could not update route',
-          `${message}\n\nTimer was extended — open Maps when you have a signal if you want turn-by-turn.`,
-        );
+        showAlert({
+          title: 'Could not update route',
+          message: `${message}\n\nTimer was extended — tap Begin Nap or Open Maps when you have a signal if you want turn-by-turn.`,
+          tone: 'warning',
+        });
       } finally {
         recalculatingRef.current = false;
         setRecalculating(false);
       }
     },
-    [activeStyle, destinationLabel, initialRoute],
+    [activeStyle, destinationLabel, initialRoute, showAlert],
   );
 
   const handleTimerComplete = useCallback(async () => {
@@ -360,15 +338,16 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
             ? err.message
             : 'Could not build a direct route.';
       setRecalcError(message);
-      Alert.alert(
-        'Could not head to destination',
-        `${message}\n\nOpen Maps from the button above to navigate manually.`,
-      );
+      showAlert({
+        title: 'Could not head to destination',
+        message: `${message}\n\nTap Open Maps to navigate manually.`,
+        tone: 'warning',
+      });
     } finally {
       recalculatingRef.current = false;
       setRecalculating(false);
     }
-  }, [activeStyle, destinationLabel, initialRoute]);
+  }, [activeStyle, destinationLabel, initialRoute, showAlert]);
 
   const handleTakeAlternativeRoute = useCallback(async () => {
     if (recalculatingRef.current) return;
@@ -381,7 +360,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     setRecalcError(null);
     setSelectedAlertId(null);
 
-    const baselineMilitary = countMilitaryAlerts(currentAlerts);
+    const baselineHazards = countSafetyHazards(currentAlerts);
     const maxAttempts = 3;
 
     try {
@@ -393,7 +372,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
       );
 
       let best: RouteResult | null = null;
-      let bestMilitary = Infinity;
+      let bestHazards = Infinity;
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         altRouteCountRef.current += 1;
@@ -401,7 +380,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
           parseLatLng(destination) ??
           endPin ??
           homeOriginRef.current;
-        const bypass = bypassWaypointForAlerts(
+        const bypass = bypassWaypointForRestricted(
           here,
           destCoord,
           currentAlerts,
@@ -460,13 +439,13 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
             candidate.routeRestrictionsPartiallyIgnored,
           origin: candidate.origin,
         });
-        const military = countMilitaryAlerts(check.alerts);
+        const hazards = countSafetyHazards(check.alerts);
 
-        if (military < bestMilitary) {
-          bestMilitary = military;
+        if (hazards < bestHazards) {
+          bestHazards = hazards;
           best = candidate;
         }
-        if (military === 0) break;
+        if (hazards === 0) break;
       }
 
       if (!best) {
@@ -475,11 +454,13 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
 
       setRoute(best);
 
-      if (bestMilitary > 0 && bestMilitary >= baselineMilitary) {
-        Alert.alert(
-          'Still near a restricted area',
-          'Tried alternate paths, but a restricted area may still be nearby. You can tap Alt route again or open Maps to navigate around it.',
-        );
+      if (bestHazards > 0 && bestHazards >= baselineHazards) {
+        showAlert({
+          title: 'Still near an unsafe area',
+          message:
+            'Tried alternate paths, but a restricted area, crime, fire, or other incident may still be nearby. You can tap Alt route again or Open Maps to navigate around it.',
+          tone: 'danger',
+        });
       }
     } catch (err) {
       const message =
@@ -489,13 +470,17 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
             ? err.message
             : 'Could not build an alternate route.';
       setRecalcError(message);
-      Alert.alert('Could not find alternate route', message);
+      showAlert({
+        title: 'Could not find alternate route',
+        message,
+        tone: 'warning',
+      });
     } finally {
       recalculatingRef.current = false;
       setFindingAlt(false);
       setRecalculating(false);
     }
-  }, [activeStyle, destinationLabel, endPin, initialRoute]);
+  }, [activeStyle, destinationLabel, endPin, initialRoute, showAlert]);
 
   const handleAlertPress = useCallback((alert: RouteAlert) => {
     setSelectedAlertId(prev => (prev === alert.id ? null : alert.id));
@@ -516,6 +501,13 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
         showsUserLocation
         followUser={!recalculating}
         loading={recalculating}
+        loadingLabel={
+          findingAlt
+            ? 'Finding a clear route…'
+            : headingHome
+              ? 'Routing straight…'
+              : 'Updating your route…'
+        }
         error={recalcError}
         alerts={alerts}
         snappedPath={snappedPath}
@@ -548,22 +540,15 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
                   : `To ${destinationLabel || 'your destination'}`}
           </Text>
         </View>
-        <Pressable onPress={handleOpenMaps} style={styles.mapsBtn}>
-          <Text style={styles.mapsBtnText}>{mapsOpened ? 'Maps' : 'Open'}</Text>
-        </Pressable>
       </View>
 
       {selectedAlert && (
         <View style={[styles.callout, { top: insets.top + 64 }]}>
           <Text style={styles.calloutTitle} numberOfLines={1}>
-            {selectedAlert.kind === 'military'
-              ? `Restricted · ${selectedAlert.title}`
-              : selectedAlert.title}
+            {`${hazardLabel(selectedAlert.kind)} · ${selectedAlert.title}`}
           </Text>
           <Text style={styles.calloutBody} numberOfLines={2}>
-            {selectedAlert.kind === 'military'
-              ? 'Restricted area · stay on public roads'
-              : selectedAlert.message}
+            {selectedAlert.message}
           </Text>
           <View style={styles.calloutActions}>
             <Pressable
@@ -594,7 +579,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
               style={styles.alertBannerMain}
               onPress={() => {
                 const first =
-                  alerts.find(a => a.kind === 'military') ?? alerts[0];
+                  alerts.find(isSafetyHazard) ?? alerts[0];
                 setSelectedAlertId(first.id);
               }}>
               <Text style={styles.alertBannerText} numberOfLines={2}>
@@ -615,22 +600,126 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
             </Pressable>
           </View>
         )}
-        <View style={styles.overlayHint}>
-          <Text style={styles.overlayHintText}>
-            {recalculating
-              ? findingAlt
-                ? 'Finding an alternate route around the restricted area…'
-                : headingHome
-                  ? 'Nap over — removing remaining stops and routing straight…'
-                  : 'Recalculating nap route for the extended time…'
-              : headingHome
-                ? 'Nap over · route updated straight to your destination — tap Open for Google Maps'
-                : 'Nap timer is running here · tap Open anytime for Google Maps turn-by-turn'}
-          </Text>
-        </View>
+        {(recalculating || headingHome) && (
+          <View style={styles.overlayHint}>
+            <Text style={styles.overlayHintText}>
+              {recalculating
+                ? findingAlt
+                  ? 'Finding an alternate route around the unsafe area…'
+                  : headingHome
+                    ? 'Nap over — removing remaining stops and routing straight…'
+                    : 'Recalculating nap route for the extended time…'
+                : 'Nap over · route updated straight to your destination — tap Open Maps'}
+            </Text>
+          </View>
+        )}
+        {navActive && currentNavStep && (
+          <View style={styles.navPanel}>
+            <View style={styles.navHeader}>
+              <View style={styles.navIcon}>
+                <Text style={{ fontSize: 22 }}>
+                  {dirIcon(currentNavStep.instruction)}
+                </Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.navInstruction} numberOfLines={2}>
+                  {currentNavStep.instruction}
+                </Text>
+                <Text style={styles.navMeta}>
+                  {currentNavStep.distance} · {currentNavStep.duration}
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => setNavExpanded(v => !v)}
+                style={styles.navSmallBtn}
+                accessibilityLabel={
+                  navExpanded ? 'Collapse directions' : 'Expand directions'
+                }>
+                <Text style={styles.navSmallBtnText}>
+                  {navExpanded ? '▾' : '▴'}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setNavActive(false);
+                  setNavStep(0);
+                  setNavExpanded(false);
+                }}
+                style={styles.navSmallBtn}
+                accessibilityLabel="Close directions">
+                <Text style={styles.navSmallBtnText}>✕</Text>
+              </Pressable>
+            </View>
+            {navExpanded && (
+              <ScrollView style={styles.navStepList}>
+                {allNavSteps.map((step, i) => (
+                  <Pressable
+                    key={`${step.instruction}-${i}`}
+                    onPress={() => setNavStep(i)}
+                    style={[
+                      styles.stepRow,
+                      i === safeNavStep && styles.stepRowActive,
+                    ]}>
+                    <Text style={styles.stepIcon}>
+                      {dirIcon(step.instruction)}
+                    </Text>
+                    <View style={{ flex: 1 }}>
+                      <Text
+                        style={[
+                          styles.stepText,
+                          i === safeNavStep && styles.stepTextActive,
+                        ]}>
+                        {step.instruction}
+                      </Text>
+                      <Text style={styles.stepDist}>{step.distance}</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )}
+            <View style={styles.navControls}>
+              <Pressable
+                onPress={() => setNavStep(s => Math.max(0, s - 1))}
+                disabled={safeNavStep === 0}
+                style={[
+                  styles.navCtrlBtn,
+                  safeNavStep === 0 && styles.navCtrlDisabled,
+                ]}>
+                <Text style={styles.navCtrlText}>← Prev</Text>
+              </Pressable>
+              <Text style={styles.navCount}>
+                {safeNavStep + 1} / {allNavSteps.length}
+              </Text>
+              <Pressable
+                onPress={() =>
+                  setNavStep(s => Math.min(allNavSteps.length - 1, s + 1))
+                }
+                disabled={safeNavStep === allNavSteps.length - 1}
+                style={[
+                  styles.navCtrlBtn,
+                  styles.navCtrlPrimary,
+                  safeNavStep === allNavSteps.length - 1 &&
+                    styles.navCtrlDisabled,
+                ]}>
+                <Text style={styles.navCtrlPrimaryText}>Next →</Text>
+              </Pressable>
+            </View>
+          </View>
+        )}
+        {!navActive && allNavSteps.length > 0 && (
+          <Pressable
+            onPress={() => {
+              setNavActive(true);
+              setNavExpanded(false);
+            }}
+            style={styles.directionsBtn}
+            accessibilityLabel="View directions">
+            <Text style={styles.directionsBtnText}>View directions</Text>
+          </Pressable>
+        )}
         <NapTimer
           variant="overlay"
-          autoStart
+          autoStart={napStarted}
           durationMinutes={initialDuration}
           alertAtMinutes={settings.notifyAtMinutes}
           alertsEnabled={settings.notificationsEnabled}
@@ -638,6 +727,12 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
           onExtend={handleExtend}
           onComplete={handleTimerComplete}
           onSecondsLeftChange={handleSecondsLeftChange}
+          beginAction={{
+            idleLabel: 'Begin Nap',
+            activeLabel: 'Open Maps',
+            active: mapsOpened || napStarted,
+            onPress: handleOpenMaps,
+          }}
         />
       </View>
     </View>
@@ -691,17 +786,6 @@ function makeStyles(colors: ColorPalette) {
     fontSize: 11,
     color: colors.purpleMuted,
     marginTop: 2,
-  },
-  mapsBtn: {
-    backgroundColor: colors.gold,
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  mapsBtnText: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: colors.ink,
   },
   callout: {
     position: 'absolute',
@@ -812,5 +896,118 @@ function makeStyles(colors: ColorPalette) {
     fontWeight: '600',
     textAlign: 'center',
   },
+  directionsBtn: {
+    alignSelf: 'center',
+    backgroundColor: colors.overlay,
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderWidth: 1.5,
+    borderColor: colors.lavenderBorder,
+  },
+  directionsBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.purple,
+  },
+  navPanel: {
+    borderRadius: 20,
+    backgroundColor: colors.overlay,
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: colors.lavenderBorder,
+  },
+  navHeader: {
+    backgroundColor: colors.primary,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  navIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: colors.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  navInstruction: {
+    color: colors.onPrimary,
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  navMeta: {
+    color: colors.onPrimary,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  navSmallBtn: {
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  navSmallBtnText: {
+    color: colors.onPrimary,
+    fontWeight: '700',
+  },
+  navStepList: {
+    maxHeight: 140,
+  },
+  stepRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: 'transparent',
+  },
+  stepRowActive: {
+    backgroundColor: colors.lavenderWash,
+    borderLeftColor: colors.primary,
+  },
+  stepIcon: {
+    width: 22,
+    textAlign: 'center',
+  },
+  stepText: { fontSize: 13, color: colors.purple },
+  stepTextActive: { fontWeight: '700' },
+  stepDist: { fontSize: 11, color: colors.lavenderSoft, marginTop: 2 },
+  navControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.lavenderBorder,
+  },
+  navCtrlBtn: {
+    flex: 1,
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: colors.lavenderBorder,
+    alignItems: 'center',
+  },
+  navCtrlPrimary: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  navCtrlDisabled: {
+    opacity: 0.4,
+  },
+  navCtrlText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.purple,
+  },
+  navCtrlPrimaryText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.onPrimary,
+  },
+  navCount: { fontSize: 11, color: colors.lavenderSoft },
   });
 }

@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import CompanyTag from '../components/CompanyTag';
 import GradientBackground from '../components/GradientBackground';
 import PlacesAutocomplete from '../components/PlacesAutocomplete';
 import { DURATIONS, NOTIFY_OPTIONS, ROUTE_TYPES } from '../constants/content';
@@ -301,6 +302,10 @@ export default function SettingsScreen({ navigation }: SettingsScreenProps) {
           style={styles.linkCard}>
           <Text style={styles.linkCardText}>Privacy policy →</Text>
         </Pressable>
+
+        <View style={styles.companyTag}>
+          <CompanyTag />
+        </View>
       </ScrollView>
     </GradientBackground>
   );
@@ -428,6 +433,10 @@ function makeStyles(colors: ColorPalette) {
       color: colors.purple,
       fontWeight: '700',
       fontSize: 14,
+    },
+    companyTag: {
+      marginTop: 24,
+      marginBottom: 8,
     },
   });
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import MapView, {
   Circle,
+  Heatmap,
   Marker,
   Polyline,
   PROVIDER_GOOGLE,
@@ -16,8 +17,13 @@ import MapView, {
   type Region,
 } from 'react-native-maps';
 import { GOOGLE_MAPS_API_KEY } from '../config/maps';
+import { hazardLabel, isSafetyHazard } from '../services/restrictedAreas';
 import type { LatLng as RouteLatLng, RouteAlert, RouteResult } from '../types/route';
 import { useTheme, type ColorPalette } from '../theme/ThemeContext';
+import {
+  buildHazardHeatPoints,
+  HAZARD_HEAT_GRADIENT,
+} from '../utils/hazardHeatmap';
 import { decodePolyline } from '../utils/polyline';
 
 /** Street-level preview (~few blocks). Wider when an end pin is also shown. */
@@ -35,6 +41,8 @@ interface NapMapProps {
   loading?: boolean;
   error?: string | null;
   height?: number | '100%';
+  /** Overlay copy while the map is fetching or fitting new geometry. */
+  loadingLabel?: string;
   /** When true (or when showing origin with no route), zoom in tightly and offer Street View. */
   preview?: boolean;
   /** Allow tapping the map to choose a destination. */
@@ -46,7 +54,7 @@ interface NapMapProps {
   followUser?: boolean;
   /** Full-bleed map without rounded corners / route badges. */
   fullBleed?: boolean;
-  /** Restricted-area alerts (military bases, route advisories). */
+  /** Unsafe-area alerts (bases, crime, fire, other incidents, route advisories). */
   alerts?: RouteAlert[];
   /** Roads-snapped path for smoother Navigate rendering. */
   snappedPath?: RouteLatLng[] | null;
@@ -72,21 +80,21 @@ function haversineMeters(a: LatLng, b: LatLng): number {
 function pointNearAnyAlert(point: LatLng, alerts: RouteAlert[]): boolean {
   return alerts.some(
     alert =>
-      alert.kind === 'military' &&
+      isSafetyHazard(alert) &&
       haversineMeters(point, alert.coordinate) <= alert.radiusMeters,
   );
 }
 
-/** Split path into contiguous runs that fall inside military alert radii. */
+/** Split path into contiguous runs that fall inside unsafe-area radii. */
 function dangerSegments(path: LatLng[], alerts: RouteAlert[]): LatLng[][] {
-  const military = alerts.filter(a => a.kind === 'military');
-  if (path.length < 2 || military.length === 0) return [];
+  const hazards = alerts.filter(isSafetyHazard);
+  if (path.length < 2 || hazards.length === 0) return [];
 
   const segments: LatLng[][] = [];
   let current: LatLng[] = [];
 
   for (const point of path) {
-    if (pointNearAnyAlert(point, military)) {
+    if (pointNearAnyAlert(point, hazards)) {
       current.push(point);
     } else if (current.length > 0) {
       if (current.length >= 2) segments.push(current);
@@ -117,6 +125,7 @@ export default function NapMap({
   loading = false,
   error = null,
   height = 240,
+  loadingLabel = 'Updating map…',
   preview,
   selectable = false,
   onSelectCoordinate,
@@ -137,6 +146,9 @@ export default function NapMap({
   const [streetStatus, setStreetStatus] = useState<
     'idle' | 'loading' | 'ready' | 'unavailable'
   >('idle');
+  const [mapReady, setMapReady] = useState(false);
+  const [settling, setSettling] = useState(fullBleed);
+  const preciseUpdates = fullBleed;
 
   const path = useMemo(() => {
     if (snappedPath && snappedPath.length >= 2) return snappedPath;
@@ -146,6 +158,11 @@ export default function NapMap({
   const restrictedSegments = useMemo(
     () => dangerSegments(path, alerts),
     [path, alerts],
+  );
+
+  const heatPoints = useMemo(
+    () => (fullBleed ? buildHazardHeatPoints(alerts, path) : []),
+    [fullBleed, alerts, path],
   );
 
   const center = route?.origin ?? origin ?? { lat: 37.7749, lng: -122.4194 };
@@ -162,49 +179,131 @@ export default function NapMap({
     longitudeDelta: delta,
   };
 
-  useEffect(() => {
-    if (followUser || !mapRef.current || path.length < 2) return;
-    mapRef.current.fitToCoordinates(
-      path.map(p => ({ latitude: p.lat, longitude: p.lng })),
-      {
-        edgePadding: {
-          top: fullBleed ? 80 : 40,
-          right: 40,
-          bottom: fullBleed ? 220 : 40,
-          left: 40,
-        },
-        animated: true,
-      },
-    );
-  }, [path, followUser, fullBleed]);
+  const routeKey = [
+    route?.polyline ?? '',
+    snappedPath?.length ?? 0,
+    destination?.lat ?? '',
+    destination?.lng ?? '',
+    origin?.lat ?? '',
+    origin?.lng ?? '',
+  ].join(':');
 
-  useEffect(() => {
-    if (!mapRef.current || path.length >= 2 || !origin) return;
+  const pathCoords = useMemo(
+    () => path.map(p => ({ latitude: p.lat, longitude: p.lng })),
+    [path],
+  );
 
-    if (destination) {
-      mapRef.current.fitToCoordinates(
+  const fitCamera = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return false;
+
+    const pad = {
+      top: fullBleed ? 100 : 48,
+      right: 48,
+      bottom: fullBleed ? 240 : 48,
+      left: 48,
+    };
+
+    if (pathCoords.length >= 2) {
+      map.fitToCoordinates(pathCoords, {
+        edgePadding: pad,
+        animated: false,
+      });
+      return true;
+    }
+
+    if (origin && destination) {
+      map.fitToCoordinates(
         [
           { latitude: origin.lat, longitude: origin.lng },
           { latitude: destination.lat, longitude: destination.lng },
         ],
-        {
-          edgePadding: { top: 48, right: 48, bottom: 48, left: 48 },
-          animated: true,
-        },
+        { edgePadding: pad, animated: false },
       );
-      return;
+      return true;
     }
 
-    mapRef.current.animateToRegion(
-      {
-        latitude: origin.lat,
-        longitude: origin.lng,
-        latitudeDelta: PREVIEW_DELTA,
-        longitudeDelta: PREVIEW_DELTA,
+    if (origin) {
+      map.animateToRegion(
+        {
+          latitude: origin.lat,
+          longitude: origin.lng,
+          latitudeDelta: isPreview ? PREVIEW_DELTA : ROUTE_DELTA,
+          longitudeDelta: isPreview ? PREVIEW_DELTA : ROUTE_DELTA,
+        },
+        0,
+      );
+      return true;
+    }
+
+    return false;
+  }, [destination, fullBleed, isPreview, origin, pathCoords]);
+
+  useEffect(() => {
+    if (!preciseUpdates) return;
+    setSettling(true);
+  }, [routeKey, loading, preciseUpdates]);
+
+  useEffect(() => {
+    if (preciseUpdates) {
+      if (loading || !mapReady) return;
+      const fitted = fitCamera();
+      if (!fitted) {
+        setSettling(false);
+        return;
+      }
+      const timer = setTimeout(() => setSettling(false), 160);
+      return () => clearTimeout(timer);
+    }
+
+    if (!mapRef.current) return;
+    if (followUser || pathCoords.length < 2) {
+      if (pathCoords.length < 2 && origin) {
+        if (destination) {
+          mapRef.current.fitToCoordinates(
+            [
+              { latitude: origin.lat, longitude: origin.lng },
+              { latitude: destination.lat, longitude: destination.lng },
+            ],
+            {
+              edgePadding: { top: 48, right: 48, bottom: 48, left: 48 },
+              animated: true,
+            },
+          );
+        } else {
+          mapRef.current.animateToRegion(
+            {
+              latitude: origin.lat,
+              longitude: origin.lng,
+              latitudeDelta: PREVIEW_DELTA,
+              longitudeDelta: PREVIEW_DELTA,
+            },
+            350,
+          );
+        }
+      }
+      return;
+    }
+    mapRef.current.fitToCoordinates(pathCoords, {
+      edgePadding: {
+        top: 40,
+        right: 40,
+        bottom: 40,
+        left: 40,
       },
-      350,
-    );
-  }, [origin, destination, path.length]);
+      animated: true,
+    });
+  }, [
+    destination,
+    fitCamera,
+    followUser,
+    loading,
+    mapReady,
+    origin,
+    pathCoords,
+    preciseUpdates,
+    routeKey,
+  ]);
 
   useEffect(() => {
     if (!isPreview || !origin || selectable) {
@@ -249,17 +348,15 @@ export default function NapMap({
 
   const showStreet =
     isPreview && !selectable && viewMode === 'street' && streetUrl;
+  const showOverlay = loading || (preciseUpdates && settling);
+  const overlayLabel = loadingLabel;
+  const revealGeometry = !preciseUpdates || (!loading && !settling);
 
   const wrapStyle = [
     styles.wrap,
     fullBleed && styles.wrapFullBleed,
     height === '100%' ? styles.wrapFlex : { height },
   ];
-
-  const pathCoords = path.map(p => ({
-    latitude: p.lat,
-    longitude: p.lng,
-  }));
 
   return (
     <View style={wrapStyle}>
@@ -275,9 +372,12 @@ export default function NapMap({
           style={StyleSheet.absoluteFill}
           provider={PROVIDER_GOOGLE}
           initialRegion={initialRegion}
+          onMapReady={() => setMapReady(true)}
           onPress={handlePress}
           showsUserLocation={showsUserLocation}
-          followsUserLocation={followUser}
+          followsUserLocation={
+            followUser && (!preciseUpdates || (!loading && !settling))
+          }
           showsMyLocationButton={false}
           showsCompass={fullBleed}
           toolbarEnabled={false}
@@ -285,14 +385,22 @@ export default function NapMap({
           pitchEnabled={false}
           mapType="standard"
           customMapStyle={mapStyle}>
-          {origin && !showsUserLocation && (
+          {revealGeometry && fullBleed && heatPoints.length > 0 && (
+            <Heatmap
+              points={heatPoints}
+              radius={48}
+              opacity={0.72}
+              gradient={HAZARD_HEAT_GRADIENT}
+            />
+          )}
+          {revealGeometry && origin && !showsUserLocation && (
             <Marker
               coordinate={{ latitude: origin.lat, longitude: origin.lng }}
               title="Start"
               pinColor={colors.purple}
             />
           )}
-          {destination && (
+          {revealGeometry && destination && (
             <Marker
               coordinate={{
                 latitude: destination.lat,
@@ -302,7 +410,8 @@ export default function NapMap({
               pinColor={colors.gold}
             />
           )}
-          {route?.allWaypoints?.map((wp, i) => (
+          {revealGeometry &&
+            route?.allWaypoints?.map((wp, i) => (
             <Marker
               key={`wp-${i}`}
               coordinate={{ latitude: wp.lat, longitude: wp.lng }}
@@ -310,7 +419,7 @@ export default function NapMap({
               pinColor={colors.lavender}
             />
           ))}
-          {route?.allWaypoints == null && route?.waypoint && (
+          {revealGeometry && route?.allWaypoints == null && route?.waypoint && (
             <Marker
               coordinate={{
                 latitude: route.waypoint.lat,
@@ -320,7 +429,7 @@ export default function NapMap({
               pinColor={colors.gold}
             />
           )}
-          {pathCoords.length > 1 && (
+          {revealGeometry && pathCoords.length > 1 && (
             <>
               <Polyline
                 coordinates={pathCoords}
@@ -338,7 +447,8 @@ export default function NapMap({
               />
             </>
           )}
-          {restrictedSegments.map((segment, i) => (
+          {revealGeometry &&
+            restrictedSegments.map((segment, i) => (
             <Polyline
               key={`danger-${i}`}
               coordinates={segment.map(p => ({
@@ -351,42 +461,40 @@ export default function NapMap({
               lineJoin="round"
             />
           ))}
-          {alerts.map(alert => {
+          {revealGeometry &&
+            alerts.map(alert => {
             const selected = alert.id === selectedAlertId;
+            const danger = isSafetyHazard(alert);
             return (
               <React.Fragment key={alert.id}>
-                <Circle
-                  center={{
-                    latitude: alert.coordinate.lat,
-                    longitude: alert.coordinate.lng,
-                  }}
-                  radius={
-                    selected ? alert.radiusMeters * 1.15 : alert.radiusMeters
-                  }
-                  fillColor={
-                    alert.kind === 'military'
-                      ? 'rgba(155,68,68,0.22)'
-                      : 'rgba(139,106,0,0.18)'
-                  }
-                  strokeColor={
-                    alert.kind === 'military' ? colors.danger : colors.warning
-                  }
-                  strokeWidth={selected ? 2.5 : 1.5}
-                />
+                {(!fullBleed || selected) && (
+                  <Circle
+                    center={{
+                      latitude: alert.coordinate.lat,
+                      longitude: alert.coordinate.lng,
+                    }}
+                    radius={
+                      selected ? alert.radiusMeters * 1.15 : alert.radiusMeters
+                    }
+                    fillColor={
+                      fullBleed
+                        ? 'transparent'
+                        : danger
+                          ? 'rgba(155,68,68,0.22)'
+                          : 'rgba(139,106,0,0.18)'
+                    }
+                    strokeColor={danger ? colors.danger : colors.warning}
+                    strokeWidth={selected ? 2.5 : 1.5}
+                  />
+                )}
                 <Marker
                   coordinate={{
                     latitude: alert.coordinate.lat,
                     longitude: alert.coordinate.lng,
                   }}
-                  title={
-                    alert.kind === 'military'
-                      ? `Restricted · ${alert.title}`
-                      : alert.title
-                  }
+                  title={`${hazardLabel(alert.kind)} · ${alert.title}`}
                   description={alert.message}
-                  pinColor={
-                    alert.kind === 'military' ? colors.dangerSoft : colors.gold
-                  }
+                  pinColor={danger ? colors.dangerSoft : colors.gold}
                   onPress={() => onAlertPress?.(alert)}
                 />
               </React.Fragment>
@@ -436,20 +544,20 @@ export default function NapMap({
         </View>
       )}
 
-      {loading && (
-        <View style={styles.overlay}>
+      {showOverlay && (
+        <View style={styles.overlay} pointerEvents="none">
           <ActivityIndicator color={colors.primary} />
-          <Text style={styles.overlayText}>Finding your route…</Text>
+          <Text style={styles.overlayText}>{overlayLabel}</Text>
         </View>
       )}
 
-      {!!error && !loading && (
+      {!!error && !showOverlay && (
         <View style={styles.overlay}>
           <Text style={styles.overlayText}>{error}</Text>
         </View>
       )}
 
-      {route && !loading && !fullBleed && (
+      {route && !showOverlay && !fullBleed && (
         <View style={styles.badgeRow}>
           <View style={styles.badge}>
             <Text style={styles.badgeStrong}>
@@ -530,7 +638,7 @@ function makeStyles(colors: ColorPalette) {
     },
     overlay: {
       ...StyleSheet.absoluteFill,
-      backgroundColor: colors.surfaceGlass,
+      backgroundColor: colors.overlay,
       alignItems: 'center',
       justifyContent: 'center',
       gap: 8,

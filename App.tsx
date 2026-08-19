@@ -7,6 +7,7 @@ import React from 'react';
 import { StatusBar } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { SettingsProvider } from './src/context/SettingsContext';
+import { AlertProvider } from './src/context/AlertContext';
 import { ThemeProvider, useTheme } from './src/theme/ThemeContext';
 import RootNavigator from './src/navigation/RootNavigator';
 
@@ -26,8 +27,10 @@ function App() {
     <SafeAreaProvider>
       <SettingsProvider>
         <ThemeProvider>
-          <ThemedStatusBar />
-          <RootNavigator />
+          <AlertProvider>
+            <ThemedStatusBar />
+            <RootNavigator />
+          </AlertProvider>
         </ThemeProvider>
       </SettingsProvider>
     </SafeAreaProvider>

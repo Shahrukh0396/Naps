@@ -34,6 +34,13 @@ interface NapTimerProps {
   onComplete?: () => void;
   /** Fired whenever the countdown value changes (navigation helpers). */
   onSecondsLeftChange?: (secondsLeft: number) => void;
+  /** Overlay CTA — starts the nap and opens Google Maps. */
+  beginAction?: {
+    idleLabel?: string;
+    activeLabel?: string;
+    active: boolean;
+    onPress: () => void | Promise<void>;
+  };
 }
 
 function formatTime(seconds: number): string {
@@ -47,10 +54,12 @@ function ProgressRing({
   radius,
   progress,
   color,
+  trackColor,
 }: {
   radius: number;
   progress: number;
   color: string;
+  trackColor: string;
 }) {
   const stroke = 5;
   const normalizedRadius = radius - stroke;
@@ -63,7 +72,7 @@ function ProgressRing({
       width={radius * 2}
       style={{ transform: [{ rotate: '-90deg' }] }}>
       <Circle
-        stroke="rgba(196,181,244,0.2)"
+        stroke={trackColor}
         fill="transparent"
         strokeWidth={stroke}
         r={normalizedRadius}
@@ -96,6 +105,7 @@ export default function NapTimer({
   onExtend,
   onComplete,
   onSecondsLeftChange,
+  beginAction,
 }: NapTimerProps) {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -243,14 +253,16 @@ export default function NapTimer({
       setAlertDismissed(false);
       completeFiredRef.current = false;
       silenceAlert();
-      if (!running) setRunning(true);
+      if (running || beginAction?.active) {
+        if (!running) setRunning(true);
+      }
       onExtend?.({
         addedMinutes: mins,
         totalMinutes: Math.round(nextTotal / 60),
         secondsLeft: nextLeft,
       });
     },
-    [onExtend, running, secondsLeft, silenceAlert, totalSeconds],
+    [beginAction?.active, onExtend, running, secondsLeft, silenceAlert, totalSeconds],
   );
 
   const handleOpenExtend = useCallback(() => {
@@ -270,6 +282,21 @@ export default function NapTimer({
     onDismiss();
   }, [onDismiss, silenceAlert]);
 
+  const handleBeginPress = useCallback(() => {
+    if (!running && secondsLeft > 0) {
+      setRunning(true);
+    }
+    void beginAction?.onPress();
+  }, [beginAction, running, secondsLeft]);
+
+  const toggleAlerts = useCallback(() => {
+    setLocalAlertsEnabled(v => {
+      const next = !v;
+      if (!next) silenceAlert();
+      return next;
+    });
+  }, [silenceAlert]);
+
   const progress = totalSeconds > 0 ? secondsLeft / totalSeconds : 0;
   const warnThreshold = Math.max(0, alertAtMinutes) * 60;
   const isNearEnd =
@@ -285,144 +312,117 @@ export default function NapTimer({
   const isRinging = showAlert;
   const isOverlay = variant === 'overlay';
   const plannedMinutes = Math.round(totalSeconds / 60);
+  const percentComplete = Math.round((1 - progress) * 100);
+  const statusLabel = isDone
+    ? 'Time to head to your destination'
+    : running
+      ? isNearEnd
+        ? 'Almost done — wrap up the drive'
+        : 'Drive in progress'
+      : beginAction
+        ? 'Tap Begin Nap to start'
+        : 'Tap play to start';
+  const napStarted = Boolean(beginAction?.active || running || isDone);
+  const beginLabel = napStarted
+    ? beginAction?.activeLabel ?? 'Open Maps'
+    : beginAction?.idleLabel ?? 'Begin Nap';
 
-  return (
+  const extendSheet = (
+    <ExtendTimeSheet
+      visible={extendOpen}
+      defaultMinutes={extendByMinutes}
+      currentTotalMinutes={plannedMinutes}
+      currentSecondsLeft={secondsLeft}
+      willRecalculateRoute={!!onExtend}
+      onCancel={() => setExtendOpen(false)}
+      onConfirm={handleConfirmExtend}
+    />
+  );
+
+  const alertBanner = showAlert ? (
     <View
       style={[
-        isOverlay ? styles.overlayCard : styles.card,
-        {
-          borderColor: isDone
-            ? 'rgba(229,115,115,0.55)'
-            : isNearEnd
-              ? 'rgba(244,200,66,0.65)'
-              : 'rgba(196,181,244,0.35)',
-        },
-        isRinging && styles.cardAlerting,
+        styles.alertBanner,
+        { backgroundColor: isDone ? colors.dangerSoft : colors.goldSoft },
       ]}>
-      {showAlert && (
-        <View
-          style={[
-            styles.alertBanner,
-            {
-              backgroundColor: isDone
-                ? 'rgba(229,115,115,0.22)'
-                : 'rgba(244,200,66,0.28)',
-            },
-          ]}>
-          <View style={styles.alertRow}>
-            <Text style={styles.alertEmoji}>{isDone ? '🚨' : '🔔'}</Text>
-            <View style={{ flex: 1 }}>
-              <Text
-                style={[
-                  styles.alertText,
-                  { color: isDone ? colors.dangerAlert : colors.warning },
-                ]}>
-                {isDone
-                  ? 'Nap time is up — head to your destination!'
-                  : `${minutesLeft} min left — start heading back`}
-              </Text>
-              <Text style={styles.alertSub}>
-                {isDone
-                  ? 'timer.mp3 ringing — tap Mute to silence'
-                  : 'Haptic warning — full ring when timer ends'}
-              </Text>
+      <View style={styles.alertRow}>
+        <Text style={styles.alertEmoji}>{isDone ? '🚨' : '🔔'}</Text>
+        <View style={{ flex: 1 }}>
+          <Text
+            style={[
+              styles.alertText,
+              { color: isDone ? colors.dangerAlert : colors.warning },
+            ]}>
+            {isDone
+              ? 'Nap time is up — head to your destination!'
+              : `${minutesLeft} min left — start heading back`}
+          </Text>
+          <Text style={styles.alertSub}>
+            {isDone
+              ? 'Ringing — tap Mute to silence'
+              : 'Haptic warning — full ring when timer ends'}
+          </Text>
+        </View>
+        <Pressable
+          onPress={handleDismissAlert}
+          hitSlop={10}
+          style={styles.muteBtn}>
+          <Text style={styles.muteBtnText}>Mute</Text>
+        </Pressable>
+      </View>
+    </View>
+  ) : null;
+
+  if (isOverlay) {
+    return (
+      <View
+        style={[
+          styles.overlayCard,
+          {
+            borderColor: isDone
+              ? colors.dangerSoft
+              : isNearEnd
+                ? colors.gold
+                : colors.lavenderBorder,
+          },
+          isRinging && styles.cardAlerting,
+        ]}>
+        {alertBanner}
+        <View style={styles.overlayBody}>
+          <View style={styles.overlayTop}>
+            <View style={styles.overlayTimeBlock}>
+              <Text style={styles.overlayTime}>{formatTime(secondsLeft)}</Text>
+              <Text style={styles.overlayStatus}>{statusLabel}</Text>
             </View>
             <Pressable
-              onPress={handleDismissAlert}
-              hitSlop={10}
-              style={styles.muteBtn}>
-              <Text style={styles.muteBtnText}>Mute</Text>
-            </Pressable>
-          </View>
-        </View>
-      )}
-
-      <View style={[styles.body, isOverlay && styles.bodyOverlay]}>
-        <View style={styles.headerRow}>
-          <View>
-            <Text style={styles.title}>Nap timer</Text>
-            <Text style={styles.subtitle}>
-              {isDone
-                ? 'Time to head to your destination!'
-                : running
-                  ? isNearEnd
-                    ? 'Almost done — wrap up the drive'
-                    : 'Drive in progress'
-                  : 'Tap play to start'}
-            </Text>
-          </View>
-          <View style={styles.headerActions}>
-            <Pressable
-              onPress={() => {
-                setLocalAlertsEnabled(v => {
-                  const next = !v;
-                  if (!next) silenceAlert();
-                  return next;
-                });
-              }}
-              style={[
-                styles.iconBtn,
-                {
-                  backgroundColor: localAlertsEnabled
-                    ? 'rgba(196,181,244,0.2)'
-                    : 'rgba(196,181,244,0.08)',
-                },
-              ]}>
-              <Text style={{ fontSize: 13 }}>
+              onPress={toggleAlerts}
+              style={styles.iconBtn}
+              accessibilityLabel={
+                localAlertsEnabled ? 'Mute nap alerts' : 'Enable nap alerts'
+              }>
+              <Text style={{ fontSize: 16 }}>
                 {localAlertsEnabled ? '🔔' : '🔕'}
               </Text>
             </Pressable>
-            {!isOverlay && (
-              <Pressable onPress={handleDismissTimer} style={styles.iconBtn}>
-                <Text style={{ fontSize: 13, color: colors.lavender }}>✕</Text>
-              </Pressable>
-            )}
           </View>
-        </View>
 
-        <View style={styles.mainRow}>
-          <View style={[styles.ringWrap, isOverlay && styles.ringWrapSm]}>
-            <ProgressRing
-              radius={isOverlay ? 34 : 40}
-              progress={progress}
-              color={ringColor}
+          <View style={styles.progressTrack}>
+            <View
+              style={[
+                styles.progressFill,
+                {
+                  backgroundColor: ringColor,
+                  width: `${percentComplete}%`,
+                },
+              ]}
             />
-            <View style={styles.ringCenter}>
-              <Text
-                style={[
-                  styles.timeText,
-                  {
-                    color: isDone
-                      ? colors.dangerSoft
-                      : isNearEnd
-                        ? colors.warning
-                        : colors.purple,
-                    fontSize: isDone ? 14 : isOverlay ? 15 : 17,
-                  },
-                ]}>
-                {isDone ? '🌙' : formatTime(secondsLeft)}
-              </Text>
-              {!isDone && <Text style={styles.remaining}>remaining</Text>}
-            </View>
           </View>
+          <Text style={styles.overlayMeta}>
+            {plannedMinutes} min nap · {percentComplete}% complete
+          </Text>
 
-          <View style={styles.controlsCol}>
-            <View style={styles.progressTrack}>
-              <View
-                style={[
-                  styles.progressFill,
-                  {
-                    backgroundColor: ringColor,
-                    width: `${(1 - progress) * 100}%`,
-                  },
-                ]}
-              />
-            </View>
-            <Text style={styles.durationHint}>
-              {plannedMinutes} min nap · {Math.round((1 - progress) * 100)}%
-              complete
-            </Text>
-            <View style={styles.controlsRow}>
+          <View style={styles.overlayControls}>
+            {napStarted && (
               <Pressable
                 onPress={() => {
                   if (!isDone) setRunning(v => !v);
@@ -430,19 +430,120 @@ export default function NapTimer({
                 disabled={isDone}
                 style={[
                   styles.playBtn,
-                  {
-                    backgroundColor: isDone
-                      ? 'rgba(196,181,244,0.1)'
-                      : colors.primary,
-                    opacity: isDone ? 0.5 : 1,
-                  },
+                  styles.overlayPlayBtn,
+                  isDone && styles.playBtnDisabled,
                 ]}>
                 <Text
                   style={[
                     styles.playBtnText,
-                    {
-                      color: isDone ? colors.lavender : colors.onPrimary,
-                    },
+                    { color: isDone ? colors.lavender : colors.onPrimary },
+                  ]}>
+                  {running ? '⏸ Pause' : '▶ Resume'}
+                </Text>
+              </Pressable>
+            )}
+            <Pressable
+              onPress={handleOpenExtend}
+              style={[styles.extendBtn, styles.overlayExtendBtn]}
+              accessibilityLabel="Choose how long to extend the nap">
+              <Text style={styles.extendBtnText}>Extend</Text>
+            </Pressable>
+          </View>
+
+          {beginAction && (
+            <Pressable
+              onPress={handleBeginPress}
+              style={[
+                styles.beginNapBtn,
+                napStarted && styles.beginNapBtnSecondary,
+              ]}
+              accessibilityLabel={beginLabel}
+              accessibilityRole="button">
+              <Text
+                style={[
+                  styles.beginNapText,
+                  napStarted && styles.beginNapTextSecondary,
+                ]}>
+                {napStarted ? `🗺️  ${beginLabel}` : `🌙  ${beginLabel}`}
+              </Text>
+            </Pressable>
+          )}
+        </View>
+        {extendSheet}
+      </View>
+    );
+  }
+
+  return (
+    <View
+      style={[
+        styles.card,
+        {
+          borderColor: isDone
+            ? colors.dangerSoft
+            : isNearEnd
+              ? colors.gold
+              : colors.lavenderBorder,
+        },
+        isRinging && styles.cardAlerting,
+      ]}>
+      {alertBanner}
+      <View style={styles.body}>
+        <View style={styles.headerRow}>
+          <View>
+            <Text style={styles.title}>Nap timer</Text>
+            <Text style={styles.subtitle}>{statusLabel}</Text>
+          </View>
+          <View style={styles.headerActions}>
+            <Pressable onPress={toggleAlerts} style={styles.iconBtn}>
+              <Text style={{ fontSize: 13 }}>
+                {localAlertsEnabled ? '🔔' : '🔕'}
+              </Text>
+            </Pressable>
+            <Pressable onPress={handleDismissTimer} style={styles.iconBtn}>
+              <Text style={{ fontSize: 13, color: colors.lavender }}>✕</Text>
+            </Pressable>
+          </View>
+        </View>
+
+        <View style={styles.mainRow}>
+          <View style={styles.ringWrap}>
+            <ProgressRing
+              radius={40}
+              progress={progress}
+              color={ringColor}
+              trackColor={colors.lavenderWash}
+            />
+            <View style={styles.ringCenter}>
+              <Text style={styles.timeText}>{formatTime(secondsLeft)}</Text>
+            </View>
+          </View>
+          <View style={styles.controlsCol}>
+            <View style={styles.progressTrack}>
+              <View
+                style={[
+                  styles.progressFill,
+                  {
+                    backgroundColor: ringColor,
+                    width: `${percentComplete}%`,
+                  },
+                ]}
+              />
+            </View>
+            <Text style={styles.durationHint}>
+              {plannedMinutes} min nap · {percentComplete}% complete
+            </Text>
+            <View style={styles.controlsRow}>
+              <Pressable
+                onPress={() => {
+                  if (!isDone) setRunning(v => !v);
+                }}
+                disabled={isDone}
+                style={[styles.playBtn, isDone && styles.playBtnDisabled]}>
+                <Text
+                  style={[
+                    styles.playBtnText,
+                    { color: isDone ? colors.lavender : colors.onPrimary },
                   ]}>
                   {running ? '⏸ Pause' : '▶ Start'}
                 </Text>
@@ -453,33 +554,22 @@ export default function NapTimer({
                 accessibilityLabel="Choose how long to extend the nap">
                 <Text style={styles.extendBtnText}>Extend…</Text>
               </Pressable>
-              {!isOverlay && (
-                <Pressable onPress={handleReset} style={styles.resetBtn}>
-                  <Text style={{ fontSize: 14, color: colors.lavenderSoft }}>↻</Text>
-                </Pressable>
-              )}
+              <Pressable onPress={handleReset} style={styles.resetBtn}>
+                <Text style={{ fontSize: 14, color: colors.lavenderSoft }}>↻</Text>
+              </Pressable>
             </View>
           </View>
         </View>
 
-        {localAlertsEnabled && !isDone && !isOverlay && (
+        {localAlertsEnabled && !isDone && (
           <Text style={styles.alertHint}>
             {alertAtMinutes === 0
-              ? 'timer.mp3 + haptic when nap ends'
-              : `Haptic ${alertAtMinutes} min before end · timer.mp3 at 0:00`}
+              ? 'Sound + haptic when nap ends'
+              : `Haptic ${alertAtMinutes} min before end · sound at 0:00`}
           </Text>
         )}
       </View>
-
-      <ExtendTimeSheet
-        visible={extendOpen}
-        defaultMinutes={extendByMinutes}
-        currentTotalMinutes={plannedMinutes}
-        currentSecondsLeft={secondsLeft}
-        willRecalculateRoute={!!onExtend}
-        onCancel={() => setExtendOpen(false)}
-        onConfirm={handleConfirmExtend}
-      />
+      {extendSheet}
     </View>
   );
 }
@@ -499,7 +589,7 @@ function makeStyles(colors: ColorPalette) {
     },
     overlayCard: {
       backgroundColor: colors.overlay,
-      borderRadius: 22,
+      borderRadius: 28,
       borderWidth: 1.5,
       overflow: 'hidden',
       shadowColor: colors.shadow,
@@ -515,7 +605,7 @@ function makeStyles(colors: ColorPalette) {
       elevation: 6,
     },
     alertBanner: {
-      paddingHorizontal: 14,
+      paddingHorizontal: 16,
       paddingVertical: 12,
     },
     alertRow: {
@@ -546,7 +636,84 @@ function makeStyles(colors: ColorPalette) {
       fontWeight: '800',
     },
     body: { paddingHorizontal: 20, paddingVertical: 16 },
-    bodyOverlay: { paddingHorizontal: 16, paddingVertical: 14 },
+    overlayBody: {
+      paddingHorizontal: 18,
+      paddingTop: 16,
+      paddingBottom: 16,
+    },
+    overlayTop: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      justifyContent: 'space-between',
+      marginBottom: 12,
+    },
+    overlayTimeBlock: {
+      flex: 1,
+      paddingRight: 12,
+    },
+    overlayTime: {
+      fontSize: 42,
+      fontWeight: '800',
+      color: colors.purple,
+      letterSpacing: -1.5,
+      lineHeight: 46,
+    },
+    overlayStatus: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.purpleMuted,
+      marginTop: 4,
+    },
+    overlayMeta: {
+      fontSize: 11,
+      fontWeight: '600',
+      color: colors.lavenderSoft,
+      marginTop: 6,
+      marginBottom: 12,
+    },
+    overlayControls: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      marginBottom: 12,
+    },
+    overlayPlayBtn: {
+      flex: 1,
+      alignItems: 'center',
+      paddingVertical: 12,
+    },
+    overlayExtendBtn: {
+      flex: 1,
+      alignItems: 'center',
+      paddingVertical: 12,
+    },
+    beginNapBtn: {
+      backgroundColor: colors.gold,
+      borderRadius: 18,
+      paddingVertical: 16,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginTop: 4,
+      shadowColor: colors.gold,
+      shadowOpacity: 0.45,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 4 },
+      elevation: 8,
+    },
+    beginNapBtnSecondary: {
+      backgroundColor: colors.primary,
+      shadowColor: colors.shadow,
+      shadowOpacity: 0.18,
+    },
+    beginNapText: {
+      color: colors.ink,
+      fontSize: 17,
+      fontWeight: '800',
+      letterSpacing: 0.2,
+    },
+    beginNapTextSecondary: {
+      color: colors.onPrimary,
+    },
     headerRow: {
       flexDirection: 'row',
       justifyContent: 'space-between',
@@ -565,35 +732,38 @@ function makeStyles(colors: ColorPalette) {
     },
     headerActions: { flexDirection: 'row', gap: 6 },
     iconBtn: {
-      width: 28,
-      height: 28,
-      borderRadius: 14,
+      width: 36,
+      height: 36,
+      borderRadius: 18,
       alignItems: 'center',
       justifyContent: 'center',
       backgroundColor: colors.lavenderWash,
     },
     mainRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
     ringWrap: { width: 80, height: 80 },
-    ringWrapSm: { width: 68, height: 68 },
     ringCenter: {
       ...StyleSheet.absoluteFill,
       alignItems: 'center',
       justifyContent: 'center',
     },
-    timeText: { fontWeight: '800', lineHeight: 20 },
-    remaining: { fontSize: 9, color: colors.lavenderSoft, marginTop: 2 },
+    timeText: {
+      fontWeight: '800',
+      fontSize: 18,
+      lineHeight: 22,
+      color: colors.purple,
+    },
     controlsCol: { flex: 1 },
     progressTrack: {
-      height: 4,
-      borderRadius: 2,
+      height: 6,
+      borderRadius: 999,
       backgroundColor: colors.lavenderWash,
       overflow: 'hidden',
-      marginBottom: 12,
     },
-    progressFill: { height: '100%', borderRadius: 2 },
+    progressFill: { height: '100%', borderRadius: 999 },
     durationHint: {
       fontSize: 10,
       color: colors.lavenderSoft,
+      marginTop: 8,
       marginBottom: 8,
     },
     controlsRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
@@ -601,16 +771,21 @@ function makeStyles(colors: ColorPalette) {
       paddingHorizontal: 14,
       paddingVertical: 8,
       borderRadius: 999,
+      backgroundColor: colors.primary,
     },
-    playBtnText: { fontSize: 12, fontWeight: '700' },
+    playBtnDisabled: {
+      backgroundColor: colors.lavenderWash,
+      opacity: 0.6,
+    },
+    playBtnText: { fontSize: 13, fontWeight: '700' },
     extendBtn: {
-      paddingHorizontal: 12,
-      paddingVertical: 8,
+      paddingHorizontal: 18,
+      paddingVertical: 12,
       borderRadius: 999,
       backgroundColor: colors.gold,
     },
     extendBtnText: {
-      fontSize: 12,
+      fontSize: 14,
       fontWeight: '800',
       color: colors.ink,
     },

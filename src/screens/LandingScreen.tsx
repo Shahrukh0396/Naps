@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import CompanyTag from '../components/CompanyTag';
 import GradientBackground from '../components/GradientBackground';
 import type { LandingScreenProps } from '../navigation/types';
 import { useTheme, type ColorPalette } from '../theme/ThemeContext';
@@ -66,10 +67,11 @@ export default function LandingScreen({ navigation }: LandingScreenProps) {
         </Animated.View>
       </View>
 
-      <View style={[styles.progressSection, { paddingBottom: Math.max(insets.bottom, 12) + 28 }]}>
+      <View style={[styles.progressSection, { paddingBottom: Math.max(insets.bottom, 16) + 12 }]}>
         <View style={styles.track}>
           <Animated.View style={[styles.fill, { width: barWidth }]} />
         </View>
+        <CompanyTag />
       </View>
     </GradientBackground>
   );
@@ -101,8 +103,11 @@ function makeStyles(colors: ColorPalette) {
     },
     progressSection: {
       paddingHorizontal: 48,
+      gap: 18,
+      alignItems: 'center',
     },
     track: {
+      alignSelf: 'stretch',
       height: 6,
       borderRadius: 999,
       backgroundColor: colors.progressTrack,
