@@ -21,8 +21,7 @@ const ThemeContext = createContext<ThemeContextValue>({
 });
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const { settings } = useNapSettings();
-  const darkMode = settings.darkMode;
+  const { darkMode } = useNapSettings();
 
   const value = useMemo<ThemeContextValue>(
     () => ({

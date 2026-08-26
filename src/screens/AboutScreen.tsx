@@ -19,7 +19,7 @@ const FEATURES = [
   {
     emoji: '⏱',
     title: 'Nap Timer',
-    desc: 'Built-in timer with alerts so you never overshoot the nap.',
+    desc: 'Built-in timer with alerts that keep running while you navigate in Google Maps.',
   },
   {
     emoji: '🌙',

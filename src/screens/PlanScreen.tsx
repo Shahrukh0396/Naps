@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -8,7 +8,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import ActiveRideBanner from '../components/ActiveRideBanner';
 import GradientBackground from '../components/GradientBackground';
 import NapMap from '../components/NapMap';
 import PlacesAutocomplete from '../components/PlacesAutocomplete';
@@ -18,9 +20,11 @@ import {
   type SavedPlace,
   useNapSettings,
 } from '../context/SettingsContext';
+import { useNapSession } from '../context/NapSessionContext';
 import { useGpsLocation } from '../hooks/useGpsLocation';
 import { geocodeAddress, reverseGeocode } from '../services/geocode';
 import { findRouteSuggestions, RouteError } from '../services/mapsApi';
+import { navigateParamsFromSession } from '../services/napSession';
 import type { RouteStyleId } from '../types/route';
 import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 import type { PlanScreenProps } from '../navigation/types';
@@ -45,6 +49,7 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const { settings } = useNapSettings();
+  const { session, refresh: refreshSession } = useNapSession();
   const {
     location: gpsLocation,
     status: gpsStatus,
@@ -79,6 +84,12 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
   useEffect(() => {
     detectGps();
   }, [detectGps]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshSession();
+    }, [refreshSession]),
+  );
 
   useEffect(() => {
     setSelectedDuration(settings.defaultDuration || 30);
@@ -185,6 +196,10 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
   };
 
   const handleFindRoute = async () => {
+    if (session) {
+      setError('End your current nap before planning a new route.');
+      return;
+    }
     if (!gpsLocation) {
       setError(
         gpsStatus === 'error'
@@ -218,8 +233,14 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
           : `${endLocation.lat},${endLocation.lng}`;
       const originStr = `${gpsLocation.lat},${gpsLocation.lng}`;
 
-      const { variants, primary, activeStyle, restrictedOptions } =
-        await findRouteSuggestions({
+      const {
+        variants,
+        primary,
+        activeStyle,
+        activeVariation,
+        routesByVariation,
+        restrictedOptions,
+      } = await findRouteSuggestions({
         origin: originStr,
         durationMinutes: activeDuration,
         destination,
@@ -227,11 +248,12 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
         extraStops: [],
         refreshIndex: 0,
       });
-      setActiveRoute(activeStyle);
       navigation.navigate('Results', {
         route: primary,
         variants,
         activeStyle,
+        activeVariation,
+        routesByVariation,
         durationMinutes: activeDuration,
         destination: destination ? endLabel || destination : null,
         preferredStyle: activeRoute,
@@ -281,6 +303,18 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
 
         <Text style={styles.srOnly}>Naps — GPS Nap-Drive Route Planner</Text>
         <Text style={styles.tagline}>Find a loop that matches the nap</Text>
+
+        {session ? (
+          <ActiveRideBanner
+            session={session}
+            onResume={() =>
+              navigation.navigate(
+                'Navigate',
+                navigateParamsFromSession(session),
+              )
+            }
+          />
+        ) : null}
 
         {/* Starting point */}
         <View style={styles.card}>
@@ -541,15 +575,17 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
         {/* CTA */}
         <Pressable
           onPress={handleFindRoute}
-          disabled={loading}
-          style={[styles.cta, loading && { opacity: 0.6 }]}>
+          disabled={loading || !!session}
+          style={[styles.cta, (loading || session) && { opacity: 0.6 }]}>
           {loading ? (
             <View style={styles.ctaInner}>
               <ActivityIndicator color={colors.onPrimary} />
               <Text style={styles.ctaText}>Finding your route…</Text>
             </View>
           ) : (
-            <Text style={styles.ctaText}>Find My Route →</Text>
+            <Text style={styles.ctaText}>
+              {session ? 'End current nap to plan a new route' : 'Find My Route →'}
+            </Text>
           )}
         </Pressable>
         {error && <Text style={styles.error}>{error}</Text>}

@@ -31,7 +31,7 @@ export interface RouteAlert {
   title: string;
   message: string;
   coordinate: LatLng;
-  /** Approximate alert radius in meters for map Circle */
+  /** Approximate radius in meters for proximity checks and detours. */
   radiusMeters: number;
 }
 
@@ -67,6 +67,7 @@ export interface RouteResult {
 
 export interface RestrictedRouteOption {
   styleId: RouteStyleId;
+  variation: number;
   route: RouteResult;
   variant: RouteVariant;
   restrictedCount: number;
@@ -75,6 +76,7 @@ export interface RestrictedRouteOption {
 
 export interface RouteVariant {
   id: RouteStyleId;
+  variation: number;
   emoji: string;
   label: string;
   sublabel: string;

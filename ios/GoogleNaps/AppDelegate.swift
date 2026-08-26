@@ -1,11 +1,12 @@
 import UIKit
+import UserNotifications
 import React
 import React_RCTAppDelegate
 import ReactAppDependencyProvider
 import GoogleMaps
 
 @main
-class AppDelegate: UIResponder, UIApplicationDelegate {
+class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
   var window: UIWindow?
 
   var reactNativeDelegate: ReactNativeDelegate?
@@ -18,6 +19,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     // Must be first — Google Maps SDK for iOS (key from .env via react-native-config)
     let mapsKey = RNCConfig.env(for: "GOOGLE_MAPS_API_KEY") ?? ""
     GMSServices.provideAPIKey(mapsKey)
+
+    UNUserNotificationCenter.current().delegate = self
 
     let delegate = ReactNativeDelegate()
     let factory = RCTReactNativeFactory(delegate: delegate)
@@ -35,6 +38,27 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     )
 
     return true
+  }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    // Foreground: the in-app timer alarm handles it. Background / Maps: system banner + sound.
+    if UIApplication.shared.applicationState == .active {
+      completionHandler([])
+    } else {
+      completionHandler([.banner, .list, .sound])
+    }
+  }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    completionHandler()
   }
 }
 

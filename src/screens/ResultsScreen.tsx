@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -6,7 +6,9 @@ import {
   Text,
   View,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import ActiveRideBanner from '../components/ActiveRideBanner';
 import GradientBackground from '../components/GradientBackground';
 import NapMap from '../components/NapMap';
 import NapTimer from '../components/NapTimer';
@@ -15,12 +17,15 @@ import RestrictedRoutesAlert from '../components/RestrictedRoutesAlert';
 import SpotifyCard from '../components/SpotifyCard';
 import { ROUTE_TYPE_META } from '../constants/content';
 import { useAppAlert } from '../context/AlertContext';
+import { useNapSession } from '../context/NapSessionContext';
 import {
   placesWithAddress,
   useNapSettings,
 } from '../context/SettingsContext';
 import { calcNapMatch, napMatchLabel } from '../mocks/routes';
 import { findRoute, findRouteSuggestions, RouteError } from '../services/mapsApi';
+import { navigateParamsFromSession } from '../services/napSession';
+import { armNapAlerts } from '../services/napTimerNotifications';
 import type { ResultsScreenProps } from '../navigation/types';
 import type {
   RestrictedRouteOption,
@@ -48,13 +53,23 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const { settings } = useNapSettings();
   const showAlert = useAppAlert();
+  const { session, refresh: refreshSession, persist } = useNapSession();
   const params = navRoute.params;
 
   const [route, setRoute] = useState<RouteResult>(params.route);
   const [variants, setVariants] = useState<RouteVariant[]>(params.variants);
   const [activeStyle, setActiveStyle] = useState<RouteStyleId>(params.activeStyle);
-  const [routesById, setRoutesById] = useState<Partial<Record<RouteStyleId, RouteResult>>>(
-    () => ({ [params.activeStyle]: params.route }),
+  const [activeVariation, setActiveVariation] = useState(
+    params.activeVariation ?? params.variants[0]?.variation ?? 0,
+  );
+  const [routesByVariation, setRoutesByVariation] = useState<
+    Record<number, RouteResult>
+  >(
+    () =>
+      params.routesByVariation ?? {
+        [params.activeVariation ?? params.variants[0]?.variation ?? 0]:
+          params.route,
+      },
   );
   const [refreshIndex, setRefreshIndex] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -82,6 +97,10 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
   );
 
   const hasChosenRoute = Boolean(route.polyline);
+  const activeRideIsThisRoute = Boolean(
+    session && session.route.polyline === route.polyline,
+  );
+  const rideBlocksNewStart = Boolean(session && !activeRideIsThisRoute);
 
   const durationMinutes = params.durationMinutes;
   const destination = params.destination;
@@ -91,6 +110,12 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
   const savedPlaces = useMemo(
     () => placesWithAddress(settings.savedPlaces),
     [settings.savedPlaces],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshSession();
+    }, [refreshSession]),
   );
 
   const originForMap =
@@ -108,14 +133,21 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
   const safeNavStep = Math.min(navStep, Math.max(0, allNavSteps.length - 1));
   const currentNavStep = allNavSteps[safeNavStep] ?? null;
 
-  const handleSelectRouteVariant = async (styleId: RouteStyleId) => {
-    if (styleId === activeStyle) return;
-    setActiveStyle(styleId);
+  const handleSelectRouteVariant = async (variant: RouteVariant) => {
+    if (session) return;
+    if (
+      variant.id === activeStyle &&
+      variant.variation === activeVariation
+    ) {
+      return;
+    }
+    setActiveStyle(variant.id);
+    setActiveVariation(variant.variation);
     setNavActive(false);
     setNavStep(0);
     setRouteError(null);
 
-    const cached = routesById[styleId];
+    const cached = routesByVariation[variant.variation];
     if (cached) {
       setRoute({ ...cached, destination, extraStops: extraStopsRef.current });
       return;
@@ -127,16 +159,19 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
         origin: originStr,
         destination,
         durationMinutes,
-        routeTypes: [styleId],
+        routeTypes: [variant.id],
         extraStops: extraStopsRef.current,
-        variation: refreshIndex,
+        variation: variant.variation,
       });
       const withDest = { ...next, destination };
-      setRoutesById(prev => ({ ...prev, [styleId]: withDest }));
+      setRoutesByVariation(prev => ({
+        ...prev,
+        [variant.variation]: withDest,
+      }));
       setRoute({ ...withDest, extraStops: extraStopsRef.current });
       setVariants(prev =>
         prev.map(v =>
-          v.id === styleId
+          v.variation === variant.variation
             ? {
                 ...v,
                 durationMinutes: Math.round(next.durationSeconds / 60),
@@ -167,7 +202,7 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
     setRouteError(null);
     setNavActive(false);
     setNavStep(0);
-    const nextIndex = refreshIndex + 1;
+    const nextIndex = refreshIndex + 3;
     try {
       const result = await findRouteSuggestions({
         origin: originStr,
@@ -179,8 +214,9 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
       });
       setRefreshIndex(result.refreshIndex);
       setVariants(result.variants);
-      setRoutesById(result.routesById);
+      setRoutesByVariation(result.routesByVariation);
       setActiveStyle(result.activeStyle);
+      setActiveVariation(result.activeVariation);
       setRestrictedOptions(result.restrictedOptions);
       setRestrictedAlertOpen(
         result.variants.length === 0 && result.restrictedOptions.length > 0,
@@ -210,12 +246,15 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
         origin: originStr,
         destination,
         durationMinutes,
-        routeTypes: [activeStyle],
+        routeTypes: [preferredStyle],
         extraStops: stops,
-        variation: refreshIndex,
+        variation: activeVariation,
       });
       const withDest = { ...next, destination, extraStops: stops };
-      setRoutesById(prev => ({ ...prev, [activeStyle]: withDest }));
+      setRoutesByVariation(prev => ({
+        ...prev,
+        [activeVariation]: withDest,
+      }));
       setRoute(withDest);
     } catch (err) {
       setRouteError(
@@ -245,33 +284,50 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
 
   const applyRestrictedOption = (option: RestrictedRouteOption) => {
     setActiveStyle(option.styleId);
+    setActiveVariation(option.variation);
     setRoute({
       ...option.route,
       destination,
       extraStops: extraStopsRef.current,
     });
-    setRoutesById(prev => ({ ...prev, [option.styleId]: option.route }));
+    setRoutesByVariation(prev => ({
+      ...prev,
+      [option.variation]: option.route,
+    }));
     setVariants(prev => {
-      if (prev.some(v => v.id === option.styleId)) {
-        return prev.map(v => (v.id === option.styleId ? option.variant : v));
+      if (prev.some(v => v.variation === option.variation)) {
+        return prev.map(v =>
+          v.variation === option.variation ? option.variant : v,
+        );
       }
       return [option.variant, ...prev];
     });
     setRestrictedAlertOpen(false);
   };
 
-  const goToNavigate = (napStarted: boolean) => {
+  const resumeActiveRide = () => {
+    if (!session) return;
+    navigation.navigate('Navigate', navigateParamsFromSession(session));
+  };
+
+  const goToNavigate = (napStarted: boolean, initialEndsAt?: number) => {
     navigation.navigate('Navigate', {
       route,
       durationMinutes,
       destinationLabel: destination,
       activeStyle,
       napStarted,
+      initialEndsAt,
+      initialTotalSeconds: napStarted ? durationMinutes * 60 : undefined,
     });
   };
 
   const openNapDetails = () => {
     if (stopLoading || startingNap || !hasChosenRoute) return;
+    if (session) {
+      resumeActiveRide();
+      return;
+    }
     if (!route.origin) {
       showAlert({
         title: 'Location needed',
@@ -285,6 +341,10 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
 
   const beginNap = async () => {
     if (stopLoading || startingNap || !hasChosenRoute) return;
+    if (session) {
+      resumeActiveRide();
+      return;
+    }
     if (!route.origin) {
       showAlert({
         title: 'Location needed',
@@ -295,6 +355,24 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
     }
 
     setStartingNap(true);
+    const endsAt = Date.now() + durationMinutes * 60 * 1000;
+    await persist({
+      route,
+      destinationLabel: destination,
+      activeStyle,
+      mapsOpened: true,
+      plannedMinutes: durationMinutes,
+      totalSeconds: durationMinutes * 60,
+      endsAt,
+      running: true,
+      secondsLeft: durationMinutes * 60,
+      savedAt: Date.now(),
+    });
+    await armNapAlerts({
+      endsAt,
+      alertAtMinutes: settings.notifyAtMinutes,
+      enabled: settings.notificationsEnabled,
+    });
     try {
       await openRouteInGoogleMaps(route);
     } catch {
@@ -307,7 +385,7 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
     } finally {
       setStartingNap(false);
     }
-    goToNavigate(true);
+    goToNavigate(true, endsAt);
   };
 
   const sortedVariants = variants;
@@ -456,20 +534,39 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
             </View>
           )}
 
+          {session ? (
+            <ActiveRideBanner
+              session={session}
+              onResume={resumeActiveRide}
+            />
+          ) : null}
+
           <Pressable
             onPress={beginNap}
-            disabled={stopLoading || startingNap || !hasChosenRoute}
+            disabled={
+              stopLoading ||
+              startingNap ||
+              !hasChosenRoute ||
+              rideBlocksNewStart
+            }
             style={[
               styles.navCta,
-              (stopLoading || startingNap || !hasChosenRoute) && { opacity: 0.7 },
+              (stopLoading ||
+                startingNap ||
+                !hasChosenRoute ||
+                rideBlocksNewStart) && { opacity: 0.7 },
               { backgroundColor: colors.gold },
             ]}>
             <Text style={[styles.navCtaText, { color: colors.ink }]}>
               {startingNap
                 ? 'Opening Google Maps…'
-                : hasChosenRoute
-                  ? 'Begin Nap'
-                  : 'Choose a route first'}
+                : rideBlocksNewStart
+                  ? 'End current nap to start a new one'
+                  : activeRideIsThisRoute
+                    ? 'Resume nap'
+                    : hasChosenRoute
+                      ? 'Begin Nap'
+                      : 'Choose a route first'}
             </Text>
           </Pressable>
 
@@ -481,7 +578,11 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
               (stopLoading || startingNap || !hasChosenRoute) && { opacity: 0.7 },
             ]}>
             <Text style={styles.navCtaText}>
-              {stopLoading ? 'Updating route…' : 'View more details'}
+              {stopLoading
+                ? 'Updating route…'
+                : session
+                  ? 'Resume ride details'
+                  : 'View more details'}
             </Text>
           </Pressable>
 
@@ -490,15 +591,15 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
               <View>
                 <Text style={styles.sectionLabel}>Alternate Route Suggestions</Text>
                 <Text style={styles.suggestionsSub}>
-                  Ranked for your {durationMinutes} min nap
+                  {meta.label} loops ranked for your {durationMinutes} min nap
                 </Text>
               </View>
               <Pressable
                 onPress={handleRefreshSuggestions}
-                disabled={refreshing || routeLoading || stopLoading}
+                disabled={refreshing || routeLoading || stopLoading || !!session}
                 style={[
                   styles.refreshBtn,
-                  (refreshing || routeLoading) && { opacity: 0.55 },
+                  (refreshing || routeLoading || session) && { opacity: 0.55 },
                 ]}>
                 <Text style={styles.refreshBtnText}>
                   {refreshing ? 'Refreshing…' : '↻ Refresh'}
@@ -508,7 +609,8 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
 
             <View style={{ gap: 8 }}>
               {sortedVariants.map((v, index) => {
-                const isActive = v.id === activeStyle;
+                const isActive =
+                  v.id === activeStyle && v.variation === activeVariation;
                 const match = napMatchLabel(v.napMatchScore, {
                   good: colors.success,
                   ok: colors.success,
@@ -517,8 +619,8 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
                 });
                 return (
                   <Pressable
-                    key={`${v.id}-${refreshIndex}`}
-                    onPress={() => handleSelectRouteVariant(v.id)}
+                    key={`${v.id}-${v.variation}-${refreshIndex}`}
+                    onPress={() => handleSelectRouteVariant(v)}
                     style={[
                       styles.suggestionCard,
                       isActive && styles.suggestionCardActive,

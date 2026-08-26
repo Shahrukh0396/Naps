@@ -53,7 +53,7 @@ export default function RestrictedRoutesAlert({
               contentContainerStyle={styles.listContent}>
               {options.map(option => (
                 <Pressable
-                  key={option.styleId}
+                  key={`${option.styleId}-${option.variation}`}
                   onPress={() => onSelect(option)}
                   style={styles.option}>
                   <View style={styles.optionTop}>

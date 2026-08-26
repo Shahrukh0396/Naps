@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BackHandler,
   PermissionsAndroid,
   Platform,
   Pressable,
@@ -14,9 +15,11 @@ import NapMap from '../components/NapMap';
 import NapTimer from '../components/NapTimer';
 import { ROUTE_TYPE_META } from '../constants/content';
 import { useAppAlert } from '../context/AlertContext';
+import { useNapSession } from '../context/NapSessionContext';
 import { useNapSettings } from '../context/SettingsContext';
 import type { NavigateScreenProps } from '../navigation/types';
 import { findDirectRoute, findRoute, RouteError } from '../services/mapsApi';
+import { loadActiveNap } from '../services/napSession';
 import {
   buildRouteAlerts,
   bypassWaypointForRestricted,
@@ -125,12 +128,16 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const { settings } = useNapSettings();
   const showAlert = useAppAlert();
+  const { persist, endSession } = useNapSession();
   const {
     route: initialRoute,
     durationMinutes: initialDuration,
     destinationLabel,
     activeStyle,
     napStarted = false,
+    initialEndsAt,
+    initialTotalSeconds,
+    initialSecondsLeft,
   } = navRoute.params;
   const meta = ROUTE_TYPE_META[activeStyle];
 
@@ -142,11 +149,11 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
   const [recalcError, setRecalcError] = useState<string | null>(null);
   const [alerts, setAlerts] = useState<RouteAlert[]>([]);
   const [snappedPath, setSnappedPath] = useState<LatLng[] | null>(null);
-  const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
   const [findingAlt, setFindingAlt] = useState(false);
   const [navActive, setNavActive] = useState(false);
   const [navExpanded, setNavExpanded] = useState(false);
   const [navStep, setNavStep] = useState(0);
+  const [timerStarted, setTimerStarted] = useState(napStarted);
 
   const homeOriginRef = useRef(initialRoute.origin);
   const extendCountRef = useRef(0);
@@ -169,11 +176,6 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     return lastStep?.endLocation ?? null;
   }, [route]);
 
-  const selectedAlert = useMemo(
-    () => alerts.find(a => a.id === selectedAlertId) ?? null,
-    [alerts, selectedAlertId],
-  );
-
   const allNavSteps = useMemo(
     () => route.legs.flatMap(leg => leg.steps),
     [route],
@@ -183,7 +185,6 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
 
   useEffect(() => {
     let cancelled = false;
-    setSelectedAlertId(null);
 
     (async () => {
       const result = await buildRouteAlerts(route.polyline, {
@@ -358,7 +359,6 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     setFindingAlt(true);
     setRecalculating(true);
     setRecalcError(null);
-    setSelectedAlertId(null);
 
     const baselineHazards = countSafetyHazards(currentAlerts);
     const maxAttempts = 3;
@@ -482,13 +482,155 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     }
   }, [activeStyle, destinationLabel, endPin, initialRoute, showAlert]);
 
-  const handleAlertPress = useCallback((alert: RouteAlert) => {
-    setSelectedAlertId(prev => (prev === alert.id ? null : alert.id));
-  }, []);
-
   const handleSecondsLeftChange = useCallback((secondsLeft: number) => {
     secondsLeftRef.current = secondsLeft;
   }, []);
+
+  const lastPersistAtRef = useRef(0);
+  const mapsOpenedRef = useRef(mapsOpened);
+  mapsOpenedRef.current = mapsOpened;
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const durationRef = useRef(durationMinutes);
+  durationRef.current = durationMinutes;
+  const timerStateRef = useRef({
+    running: Boolean(initialEndsAt && initialEndsAt > Date.now()) || napStarted,
+    secondsLeft:
+      initialSecondsLeft ?? initialTotalSeconds ?? initialDuration * 60,
+    totalSeconds: initialTotalSeconds ?? initialDuration * 60,
+    endsAt: initialEndsAt ?? null,
+  });
+
+  const handleTimerStateChange = useCallback(
+    (state: {
+      running: boolean;
+      secondsLeft: number;
+      totalSeconds: number;
+      endsAt: number | null;
+    }) => {
+      secondsLeftRef.current = state.secondsLeft;
+      timerStateRef.current = state;
+      const started =
+        state.running ||
+        mapsOpenedRef.current ||
+        napStarted ||
+        state.secondsLeft < state.totalSeconds;
+      if (!started) return;
+      setTimerStarted(true);
+      const now = Date.now();
+      if (
+        state.running &&
+        now - lastPersistAtRef.current < 4000 &&
+        state.secondsLeft > 0
+      ) {
+        return;
+      }
+      lastPersistAtRef.current = now;
+      void persist({
+        route: routeRef.current,
+        destinationLabel,
+        activeStyle,
+        mapsOpened: mapsOpenedRef.current || napStarted,
+        plannedMinutes: durationRef.current,
+        totalSeconds: state.totalSeconds,
+        endsAt: state.endsAt,
+        running: state.running,
+        secondsLeft: state.secondsLeft,
+        savedAt: now,
+      });
+    },
+    [activeStyle, destinationLabel, napStarted, persist],
+  );
+
+  const persistCurrentRide = useCallback(async () => {
+    const state = timerStateRef.current;
+    const started =
+      state.running ||
+      mapsOpenedRef.current ||
+      napStarted ||
+      state.secondsLeft < state.totalSeconds;
+    if (!started) return;
+    await persist({
+      route: routeRef.current,
+      destinationLabel,
+      activeStyle,
+      mapsOpened: mapsOpenedRef.current || napStarted,
+      plannedMinutes: durationRef.current,
+      totalSeconds: state.totalSeconds,
+      endsAt: state.endsAt,
+      running: state.running,
+      secondsLeft: state.secondsLeft,
+      savedAt: Date.now(),
+    });
+  }, [activeStyle, destinationLabel, napStarted, persist]);
+
+  const leaveNavigate = useCallback(() => {
+    void (async () => {
+      await persistCurrentRide();
+      if (navigation.canGoBack()) {
+        navigation.goBack();
+        return;
+      }
+      navigation.replace('MainTabs');
+    })();
+  }, [navigation, persistCurrentRide]);
+
+  const confirmEndNap = useCallback(() => {
+    const state = timerStateRef.current;
+    const started =
+      state.running ||
+      mapsOpenedRef.current ||
+      napStarted ||
+      timerStarted ||
+      state.secondsLeft < state.totalSeconds;
+    if (!started) {
+      leaveNavigate();
+      return;
+    }
+    showAlert({
+      title: 'End this nap?',
+      message:
+        'Your current ride will stop. You can plan a new route after that.',
+      tone: 'danger',
+      buttons: [
+        { label: 'Keep riding', variant: 'ghost' },
+        {
+          label: 'End nap',
+          variant: 'primary',
+          onPress: () => {
+            void endSession();
+            if (navigation.canGoBack()) {
+              navigation.goBack();
+              return;
+            }
+            navigation.replace('MainTabs');
+          },
+        },
+      ],
+    });
+  }, [endSession, leaveNavigate, napStarted, navigation, showAlert, timerStarted]);
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      leaveNavigate();
+      return true;
+    });
+    return () => sub.remove();
+  }, [leaveNavigate]);
+
+  useEffect(() => {
+    if (!napStarted && !mapsOpened) return;
+    void (async () => {
+      const current = await loadActiveNap();
+      if (!current) return;
+      await persist({
+        ...current,
+        route,
+        plannedMinutes: durationMinutes,
+        savedAt: Date.now(),
+      });
+    })();
+  }, [mapsOpened, napStarted, persist, route, durationMinutes]);
 
   return (
     <View style={styles.root}>
@@ -509,18 +651,15 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
               : 'Updating your route…'
         }
         error={recalcError}
-        alerts={alerts}
         snappedPath={snappedPath}
-        selectedAlertId={selectedAlertId}
-        onAlertPress={handleAlertPress}
       />
 
       <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
         <Pressable
-          onPress={() => navigation.goBack()}
+          onPress={leaveNavigate}
           style={styles.backBtn}
-          accessibilityLabel="End navigation">
-          <Text style={styles.backText}>← End</Text>
+          accessibilityLabel="Back">
+          <Text style={styles.backText}>← Back</Text>
         </Pressable>
         <View style={styles.topMeta}>
           <Text style={styles.topTitle} numberOfLines={1}>
@@ -540,52 +679,24 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
                   : `To ${destinationLabel || 'your destination'}`}
           </Text>
         </View>
+        {timerStarted || mapsOpened || napStarted ? (
+          <Pressable
+            onPress={confirmEndNap}
+            style={styles.endBtn}
+            accessibilityLabel="End nap">
+            <Text style={styles.endBtnText}>End</Text>
+          </Pressable>
+        ) : null}
       </View>
-
-      {selectedAlert && (
-        <View style={[styles.callout, { top: insets.top + 64 }]}>
-          <Text style={styles.calloutTitle} numberOfLines={1}>
-            {`${hazardLabel(selectedAlert.kind)} · ${selectedAlert.title}`}
-          </Text>
-          <Text style={styles.calloutBody} numberOfLines={2}>
-            {selectedAlert.message}
-          </Text>
-          <View style={styles.calloutActions}>
-            <Pressable
-              onPress={handleTakeAlternativeRoute}
-              disabled={recalculating}
-              style={[
-                styles.calloutAltBtn,
-                recalculating && styles.calloutAltBtnDisabled,
-              ]}>
-              <Text style={styles.calloutAltBtnText}>
-                {findingAlt ? 'Finding…' : 'Take alt route'}
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setSelectedAlertId(null)}
-              hitSlop={8}
-              style={styles.calloutDismiss}>
-              <Text style={styles.calloutDismissText}>Dismiss</Text>
-            </Pressable>
-          </View>
-        </View>
-      )}
 
       <View style={[styles.timerOverlay, { paddingBottom: insets.bottom + 12 }]}>
         {alerts.length > 0 && (
           <View style={styles.alertBanner}>
-            <Pressable
-              style={styles.alertBannerMain}
-              onPress={() => {
-                const first =
-                  alerts.find(isSafetyHazard) ?? alerts[0];
-                setSelectedAlertId(first.id);
-              }}>
+            <View style={styles.alertBannerMain}>
               <Text style={styles.alertBannerText} numberOfLines={2}>
                 {alertBannerText(alerts)}
               </Text>
-            </Pressable>
+            </View>
             <Pressable
               onPress={handleTakeAlternativeRoute}
               disabled={recalculating}
@@ -719,14 +830,18 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
         )}
         <NapTimer
           variant="overlay"
-          autoStart={napStarted}
+          autoStart={napStarted && (initialEndsAt != null || initialSecondsLeft == null)}
           durationMinutes={initialDuration}
+          initialEndsAt={initialEndsAt}
+          initialTotalSeconds={initialTotalSeconds}
+          initialSecondsLeft={initialSecondsLeft}
           alertAtMinutes={settings.notifyAtMinutes}
           alertsEnabled={settings.notificationsEnabled}
-          onDismiss={() => navigation.goBack()}
+          onDismiss={leaveNavigate}
           onExtend={handleExtend}
           onComplete={handleTimerComplete}
           onSecondsLeftChange={handleSecondsLeftChange}
+          onTimerStateChange={handleTimerStateChange}
           beginAction={{
             idleLabel: 'Begin Nap',
             activeLabel: 'Open Maps',
@@ -768,6 +883,19 @@ function makeStyles(colors: ColorPalette) {
     fontWeight: '800',
     color: colors.purple,
   },
+  endBtn: {
+    backgroundColor: colors.overlay,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1.5,
+    borderColor: colors.dangerSoft,
+  },
+  endBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.danger,
+  },
   topMeta: {
     flex: 1,
     backgroundColor: colors.overlay,
@@ -786,57 +914,6 @@ function makeStyles(colors: ColorPalette) {
     fontSize: 11,
     color: colors.purpleMuted,
     marginTop: 2,
-  },
-  callout: {
-    position: 'absolute',
-    left: 12,
-    right: 12,
-    backgroundColor: colors.overlay,
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderWidth: 1.5,
-    borderColor: colors.dangerSoft,
-    gap: 2,
-  },
-  calloutTitle: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.danger,
-  },
-  calloutBody: {
-    fontSize: 11,
-    color: colors.purpleMuted,
-  },
-  calloutActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 8,
-    gap: 10,
-  },
-  calloutAltBtn: {
-    backgroundColor: colors.primary,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-  },
-  calloutAltBtnDisabled: {
-    opacity: 0.55,
-  },
-  calloutAltBtnText: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: colors.onPrimary,
-  },
-  calloutDismiss: {
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-  },
-  calloutDismissText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.purple,
   },
   timerOverlay: {
     position: 'absolute',

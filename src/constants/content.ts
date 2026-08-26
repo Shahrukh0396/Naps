@@ -1,7 +1,6 @@
 import type { RouteStyleId } from '../types/route';
 
 export const DURATIONS = [
-  { label: '1 min', value: 1 },
   { label: '30 min', value: 30 },
   { label: '40 min', value: 40 },
   { label: '1 hr', value: 60 },
@@ -51,7 +50,7 @@ export const PRIVACY_POLICY_URL = 'https://vsirj7j0qh.c37.airoapp.ai/privacy';
 export const SUPPORT_FAQS = [
   {
     q: 'How does Naps pick a route?',
-    a: 'Naps builds a loop (or destination) drive that matches your nap length and preferred road style, then ranks options by how close they are to your target time.',
+    a: 'Naps builds a loop (or destination) drive that matches your nap length and the route style you selected, then ranks same-style options by how close they are to your target time.',
   },
   {
     q: 'Does Naps store my location?',
@@ -59,10 +58,10 @@ export const SUPPORT_FAQS = [
   },
   {
     q: 'Can I open the route in Google Maps?',
-    a: 'Yes. On the route screen, tap Begin Nap — that opens the selected route in the Google Maps app first, then starts the in-app timer. View more details opens the nap map without leaving the app. Extend updates the route while the timer stays in Naps.',
+    a: 'Yes. On the route screen, tap Begin Nap — that opens the selected route in the Google Maps app first, then starts the nap timer. The timer keeps running while you navigate in Maps and will still alert you if Naps is in the background. View more details opens the nap map without leaving the app. Extend updates the route while the timer stays in Naps.',
   },
   {
     q: 'What is the nap timer for?',
-    a: 'The timer tracks your drive and can alert you a few minutes before the nap ends so you can head home on time.',
+    a: 'The timer tracks your drive and alerts you a few minutes before the nap ends — even while Google Maps is open — so you can head home on time.',
   },
 ];

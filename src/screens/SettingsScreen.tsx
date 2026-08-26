@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BackHandler,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -8,11 +9,13 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CompanyTag from '../components/CompanyTag';
 import GradientBackground from '../components/GradientBackground';
 import PlacesAutocomplete from '../components/PlacesAutocomplete';
 import { DURATIONS, NOTIFY_OPTIONS, ROUTE_TYPES } from '../constants/content';
+import { useAppAlert } from '../context/AlertContext';
 import {
   createCustomPlace,
   createHomePlace,
@@ -22,6 +25,7 @@ import {
   useNapSettings,
 } from '../context/SettingsContext';
 import { useGpsLocation } from '../hooks/useGpsLocation';
+import { setSettingsLeaveGuard } from '../navigation/settingsLeaveGuard';
 import type { SettingsScreenProps } from '../navigation/types';
 import type { RouteStyleId } from '../types/route';
 import { useTheme, type ColorPalette } from '../theme/ThemeContext';
@@ -35,16 +39,43 @@ function draftPlacesFromSettings(places: SavedPlace[]): SavedPlace[] {
   return [home, work, ...customs];
 }
 
+function comparablePlaces(places: SavedPlace[]) {
+  return draftPlacesFromSettings(places).map(place => ({
+    id: place.kind === 'custom' ? place.id : place.kind,
+    kind: place.kind,
+    label: place.label.trim(),
+    address: place.address.trim(),
+  }));
+}
+
+function settingsAreDirty(draft: NapSettings, saved: NapSettings): boolean {
+  if (draft.darkMode !== saved.darkMode) return true;
+  if (draft.defaultRouteType !== saved.defaultRouteType) return true;
+  if (draft.defaultDuration !== saved.defaultDuration) return true;
+  if (draft.notifyAtMinutes !== saved.notifyAtMinutes) return true;
+  if (draft.notificationsEnabled !== saved.notificationsEnabled) return true;
+  return (
+    JSON.stringify(comparablePlaces(draft.savedPlaces)) !==
+    JSON.stringify(comparablePlaces(saved.savedPlaces))
+  );
+}
+
 export default function SettingsScreen({ navigation }: SettingsScreenProps) {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const { settings, updateSettings, setDarkMode } = useNapSettings();
+  const { settings, updateSettings, setDarkModeOverride } = useNapSettings();
+  const showAlert = useAppAlert();
   const { location: gpsLocation, detect: detectGps } = useGpsLocation();
   const [draft, setDraft] = useState<NapSettings>(() => ({
     ...settings,
     savedPlaces: draftPlacesFromSettings(settings.savedPlaces),
   }));
+  const [saving, setSaving] = useState(false);
+  const dirtyRef = useRef(false);
+  const pendingLeaveRef = useRef<null | (() => void)>(null);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   useEffect(() => {
     setDraft({
@@ -57,11 +88,81 @@ export default function SettingsScreen({ navigation }: SettingsScreenProps) {
     settings.defaultDuration,
     settings.notifyAtMinutes,
     settings.notificationsEnabled,
+    settings.darkMode,
   ]);
 
   useEffect(() => {
     detectGps();
   }, [detectGps]);
+
+  const isDirty = useMemo(
+    () => settingsAreDirty(draft, settings),
+    [draft, settings],
+  );
+  dirtyRef.current = isDirty;
+
+  const resetDraft = useCallback(() => {
+    const saved = settingsRef.current;
+    setDarkModeOverride(null);
+    setDraft({
+      ...saved,
+      savedPlaces: draftPlacesFromSettings(saved.savedPlaces),
+    });
+  }, [setDarkModeOverride]);
+
+  const discardAndLeave = useCallback(() => {
+    resetDraft();
+    const leave = pendingLeaveRef.current;
+    pendingLeaveRef.current = null;
+    leave?.();
+  }, [resetDraft]);
+
+  const promptUnsavedLeave = useCallback(() => {
+    showAlert({
+      title: 'Unsaved changes',
+      message:
+        'If you leave now, your settings changes will be discarded.',
+      tone: 'warning',
+      buttons: [
+        {
+          label: 'Keep editing',
+          variant: 'ghost',
+          onPress: () => {
+            pendingLeaveRef.current = null;
+          },
+        },
+        {
+          label: 'Discard',
+          variant: 'primary',
+          onPress: discardAndLeave,
+        },
+      ],
+    });
+  }, [discardAndLeave, showAlert]);
+
+  useEffect(() => {
+    setSettingsLeaveGuard({
+      dirty: isDirty,
+      prompt: proceed => {
+        pendingLeaveRef.current = proceed;
+        promptUnsavedLeave();
+      },
+    });
+    return () => setSettingsLeaveGuard(null);
+  }, [isDirty, promptUnsavedLeave]);
+
+  useFocusEffect(
+    useCallback(() => {
+      const onBack = () => {
+        if (!dirtyRef.current) return false;
+        pendingLeaveRef.current = () => navigation.navigate('Home');
+        promptUnsavedLeave();
+        return true;
+      };
+      const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
+      return () => sub.remove();
+    }, [navigation, promptUnsavedLeave]),
+  );
 
   const home = draft.savedPlaces.find(p => p.kind === 'home');
   const work = draft.savedPlaces.find(p => p.kind === 'work');
@@ -95,7 +196,26 @@ export default function SettingsScreen({ navigation }: SettingsScreenProps) {
   };
 
   const save = async () => {
-    await updateSettings({ ...draft, darkMode: settings.darkMode });
+    if (!isDirty || saving) return;
+    setSaving(true);
+    try {
+      await updateSettings({ ...draft });
+      showAlert({
+        title: 'Settings saved',
+        message: 'Your preferences are up to date.',
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openPrivacy = () => {
+    if (isDirty) {
+      pendingLeaveRef.current = () => navigation.navigate('Privacy');
+      promptUnsavedLeave();
+      return;
+    }
+    navigation.navigate('Privacy');
   };
 
   return (
@@ -109,8 +229,11 @@ export default function SettingsScreen({ navigation }: SettingsScreenProps) {
         keyboardShouldPersistTaps="handled">
         <View style={styles.topRow}>
           <Text style={styles.title}>Settings</Text>
-          <Pressable onPress={save} style={styles.saveBtn}>
-            <Text style={styles.saveText}>Save</Text>
+          <Pressable
+            onPress={save}
+            disabled={!isDirty || saving}
+            style={[styles.saveBtn, (!isDirty || saving) && styles.saveBtnDisabled]}>
+            <Text style={styles.saveText}>{saving ? 'Saving…' : 'Save'}</Text>
           </Pressable>
         </View>
 
@@ -123,9 +246,10 @@ export default function SettingsScreen({ navigation }: SettingsScreenProps) {
               </Text>
             </View>
             <Switch
-              value={settings.darkMode}
+              value={draft.darkMode}
               onValueChange={darkMode => {
-                void setDarkMode(darkMode);
+                setDraft(s => ({ ...s, darkMode }));
+                setDarkModeOverride(darkMode);
               }}
               trackColor={{ false: colors.lavender, true: colors.gold }}
               thumbColor={colors.onPrimary}
@@ -261,7 +385,9 @@ export default function SettingsScreen({ navigation }: SettingsScreenProps) {
           <View style={styles.switchRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.sectionTitle}>🔔 Nap alerts</Text>
-              <Text style={styles.sectionSub}>Remind before the nap ends</Text>
+              <Text style={styles.sectionSub}>
+                Remind before the nap ends — even in Google Maps
+              </Text>
             </View>
             <Switch
               value={draft.notificationsEnabled}
@@ -297,9 +423,7 @@ export default function SettingsScreen({ navigation }: SettingsScreenProps) {
           )}
         </View>
 
-        <Pressable
-          onPress={() => navigation.navigate('Privacy')}
-          style={styles.linkCard}>
+        <Pressable onPress={openPrivacy} style={styles.linkCard}>
           <Text style={styles.linkCardText}>Privacy policy →</Text>
         </Pressable>
 
@@ -325,6 +449,9 @@ function makeStyles(colors: ColorPalette) {
       paddingHorizontal: 14,
       paddingVertical: 8,
       borderRadius: 999,
+    },
+    saveBtnDisabled: {
+      opacity: 0.45,
     },
     saveText: { color: colors.onPrimary, fontWeight: '700', fontSize: 13 },
     card: {

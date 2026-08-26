@@ -4,3 +4,18 @@ extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autoli
 rootProject.name = 'naps'
 include ':app'
 includeBuild('../node_modules/@react-native/gradle-plugin')
+
+// RN New Architecture: `./gradlew clean` deletes library codegen JNI dirs, then
+// AGP re-runs CMake from leftover .cxx caches and fails on missing add_subdirectory
+// paths. Drop those caches before any project is configured.
+def requestedClean = gradle.startParameter.taskNames.any { name ->
+    def n = name.toLowerCase()
+    n == "clean" || n.endsWith(":clean") || n.contains("externalnativebuildclean")
+}
+if (requestedClean) {
+    [file("app/.cxx"), file(".cxx")].each { dir ->
+        if (dir.exists()) {
+            dir.deleteDir()
+        }
+    }
+}

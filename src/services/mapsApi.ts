@@ -12,27 +12,7 @@ import { RouteError } from './routeError';
 
 export { findRoute, findDirectRoute, RouteError };
 
-const ALL_STYLES: RouteStyleId[] = [
-  'highway',
-  'no-highway',
-  'scenic',
-  'fewer-lights',
-];
-
-function pickSuggestionStyles(
-  preferred: RouteStyleId,
-  refreshIndex: number,
-): RouteStyleId[] {
-  if (refreshIndex === 0) {
-    return [preferred, ...ALL_STYLES.filter(s => s !== preferred)].slice(0, 3);
-  }
-  const start = refreshIndex % ALL_STYLES.length;
-  const rotated = [
-    ...ALL_STYLES.slice(start),
-    ...ALL_STYLES.slice(0, start),
-  ];
-  return rotated.slice(0, 3);
-}
+const SUGGESTION_COUNT = 3;
 
 function parseOriginCoord(origin: string): LatLng | null {
   const parts = origin.split(',');
@@ -67,11 +47,13 @@ function toVariant(
   styleId: RouteStyleId,
   data: RouteResult,
   durationMinutes: number,
+  variation: number,
 ): RouteVariant {
   const meta = ROUTE_TYPE_META[styleId];
   const mins = Math.round(data.durationSeconds / 60);
   return {
     id: styleId,
+    variation,
     emoji: meta.emoji,
     label: meta.label,
     sublabel: meta.sublabel,
@@ -87,7 +69,8 @@ export interface RouteSuggestionsResult {
   variants: RouteVariant[];
   primary: RouteResult;
   activeStyle: RouteStyleId;
-  routesById: Partial<Record<RouteStyleId, RouteResult>>;
+  activeVariation: number;
+  routesByVariation: Record<number, RouteResult>;
   refreshIndex: number;
   restrictedOptions: RestrictedRouteOption[];
 }
@@ -102,20 +85,20 @@ export async function findRouteSuggestions(params: {
 }): Promise<RouteSuggestionsResult> {
   const refreshIndex = params.refreshIndex ?? 0;
   const extraStops = params.extraStops ?? [];
-  const styles = pickSuggestionStyles(params.preferredStyle, refreshIndex);
+  const styleId = params.preferredStyle;
 
   const variants: RouteVariant[] = [];
-  const routesById: Partial<Record<RouteStyleId, RouteResult>> = {};
+  const routesByVariation: Record<number, RouteResult> = {};
   const restrictedOptions: RestrictedRouteOption[] = [];
+  const attempted = new Set<number>();
 
-  const collect = async (styleIds: RouteStyleId[], variation: number) => {
-    const pending = styleIds.filter(
-      id => !routesById[id] && !restrictedOptions.some(o => o.styleId === id),
-    );
+  const collect = async (variationIds: number[]) => {
+    const pending = variationIds.filter(id => !attempted.has(id));
+    pending.forEach(id => attempted.add(id));
     if (pending.length === 0) return;
 
     const results = await Promise.allSettled(
-      pending.map(styleId =>
+      pending.map(variation =>
         findRoute({
           origin: params.origin,
           destination: params.destination,
@@ -129,15 +112,21 @@ export async function findRouteSuggestions(params: {
     );
 
     results.forEach((result, idx) => {
-      const styleId = pending[idx];
+      const variation = pending[idx];
       if (result.status !== 'fulfilled') return;
       const data = { ...result.value, destination: params.destination };
-      const variant = toVariant(styleId, data, params.durationMinutes);
+      const variant = toVariant(
+        styleId,
+        data,
+        params.durationMinutes,
+        variation,
+      );
       const restrictedCount = data.restrictedNear?.count ?? 0;
 
       if (restrictedCount > 0) {
         restrictedOptions.push({
           styleId,
+          variation,
           route: data,
           variant,
           restrictedCount,
@@ -146,25 +135,20 @@ export async function findRouteSuggestions(params: {
         return;
       }
 
-      routesById[styleId] = data;
+      routesByVariation[variation] = data;
       variants.push(variant);
     });
   };
 
-  await collect(styles, refreshIndex);
+  const batch = (offset: number) =>
+    Array.from({ length: SUGGESTION_COUNT }, (_, i) => offset + i);
 
-  if (variants.length < 3) {
-    await collect(
-      ALL_STYLES.filter(id => !routesById[id]),
-      refreshIndex + 1,
-    );
+  await collect(batch(refreshIndex));
+  if (variants.length < SUGGESTION_COUNT) {
+    await collect(batch(refreshIndex + SUGGESTION_COUNT));
   }
-
-  if (variants.length < 3) {
-    await collect(
-      ALL_STYLES.filter(id => !routesById[id]),
-      refreshIndex + 2,
-    );
+  if (variants.length < SUGGESTION_COUNT) {
+    await collect(batch(refreshIndex + SUGGESTION_COUNT * 2));
   }
 
   restrictedOptions.sort((a, b) => {
@@ -184,25 +168,18 @@ export async function findRouteSuggestions(params: {
     return {
       variants: [],
       primary: emptyMapRoute(origin, params.destination),
-      activeStyle: params.preferredStyle,
-      routesById: {},
+      activeStyle: styleId,
+      activeVariation: refreshIndex,
+      routesByVariation: {},
       refreshIndex,
       restrictedOptions,
     };
   }
 
   const ranked = [...variants].sort((a, b) => b.napMatchScore - a.napMatchScore);
-  const top3 = ranked.slice(0, 3);
-
-  let activeStyle = top3[0].id;
-  if (
-    refreshIndex === 0 &&
-    top3.some(v => v.id === params.preferredStyle)
-  ) {
-    activeStyle = params.preferredStyle;
-  }
-
-  const primary = routesById[activeStyle];
+  const top3 = ranked.slice(0, SUGGESTION_COUNT);
+  const activeVariation = top3[0].variation;
+  const primary = routesByVariation[activeVariation];
   if (!primary) {
     throw new RouteError(
       'Could not calculate a route. Try a different address or route type.',
@@ -212,8 +189,9 @@ export async function findRouteSuggestions(params: {
   return {
     variants: top3,
     primary,
-    activeStyle,
-    routesById,
+    activeStyle: styleId,
+    activeVariation,
+    routesByVariation,
     refreshIndex,
     restrictedOptions,
   };

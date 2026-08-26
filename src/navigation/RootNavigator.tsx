@@ -14,6 +14,7 @@ import SupportScreen from '../screens/SupportScreen';
 import PrivacyScreen from '../screens/PrivacyScreen';
 import type { MainTabParamList, RootStackParamList } from './types';
 import { useTheme, type ColorPalette } from '../theme/ThemeContext';
+import { blockLeaveIfSettingsDirty, isNamedTabFocused } from './settingsLeaveGuard';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<MainTabParamList>();
@@ -47,6 +48,7 @@ function MainTabs() {
 
   return (
     <Tab.Navigator
+      id="MainTabs"
       screenOptions={{
         headerShown: false,
         tabBarShowLabel: false,
@@ -82,7 +84,18 @@ function MainTabs() {
           justifyContent: 'center',
           alignItems: 'center',
         },
-      }}>
+      }}
+      screenListeners={({ navigation, route }) => ({
+        tabPress: e => {
+          if (route.name === 'Settings') return;
+          const onSettings = isNamedTabFocused(navigation.getState(), 'Settings');
+          if (!onSettings) return;
+          const blocked = blockLeaveIfSettingsDirty(() => {
+            navigation.navigate(route.name);
+          });
+          if (blocked) e.preventDefault();
+        },
+      })}>
       <Tab.Screen
         name="Home"
         component={PlanScreen}

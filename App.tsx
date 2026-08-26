@@ -8,6 +8,7 @@ import { StatusBar } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { SettingsProvider } from './src/context/SettingsContext';
 import { AlertProvider } from './src/context/AlertContext';
+import { NapSessionProvider } from './src/context/NapSessionContext';
 import { ThemeProvider, useTheme } from './src/theme/ThemeContext';
 import RootNavigator from './src/navigation/RootNavigator';
 
@@ -28,8 +29,10 @@ function App() {
       <SettingsProvider>
         <ThemeProvider>
           <AlertProvider>
-            <ThemedStatusBar />
-            <RootNavigator />
+            <NapSessionProvider>
+              <ThemedStatusBar />
+              <RootNavigator />
+            </NapSessionProvider>
           </AlertProvider>
         </ThemeProvider>
       </SettingsProvider>

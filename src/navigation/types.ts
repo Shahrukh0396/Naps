@@ -16,6 +16,8 @@ export type RootStackParamList = {
     route: RouteResult;
     variants: RouteVariant[];
     activeStyle: RouteStyleId;
+    activeVariation?: number;
+    routesByVariation?: Record<number, RouteResult>;
     durationMinutes: number;
     destination: string | null;
     originLabel: string;
@@ -29,6 +31,10 @@ export type RootStackParamList = {
     activeStyle: RouteStyleId;
     /** True when Results already opened Google Maps and started the nap. */
     napStarted?: boolean;
+    /** Wall-clock end time so the timer keeps running in Maps / after kill. */
+    initialEndsAt?: number;
+    initialTotalSeconds?: number;
+    initialSecondsLeft?: number;
   };
   About: undefined;
   Privacy: undefined;

@@ -8,8 +8,6 @@ import {
   View,
 } from 'react-native';
 import MapView, {
-  Circle,
-  Heatmap,
   Marker,
   Polyline,
   PROVIDER_GOOGLE,
@@ -17,13 +15,8 @@ import MapView, {
   type Region,
 } from 'react-native-maps';
 import { GOOGLE_MAPS_API_KEY } from '../config/maps';
-import { hazardLabel, isSafetyHazard } from '../services/restrictedAreas';
-import type { LatLng as RouteLatLng, RouteAlert, RouteResult } from '../types/route';
+import type { LatLng as RouteLatLng, RouteResult } from '../types/route';
 import { useTheme, type ColorPalette } from '../theme/ThemeContext';
-import {
-  buildHazardHeatPoints,
-  HAZARD_HEAT_GRADIENT,
-} from '../utils/hazardHeatmap';
 import { decodePolyline } from '../utils/polyline';
 
 /** Street-level preview (~few blocks). Wider when an end pin is also shown. */
@@ -54,56 +47,11 @@ interface NapMapProps {
   followUser?: boolean;
   /** Full-bleed map without rounded corners / route badges. */
   fullBleed?: boolean;
-  /** Unsafe-area alerts (bases, crime, fire, other incidents, route advisories). */
-  alerts?: RouteAlert[];
   /** Roads-snapped path for smoother Navigate rendering. */
   snappedPath?: RouteLatLng[] | null;
-  selectedAlertId?: string | null;
-  onAlertPress?: (alert: RouteAlert) => void;
 }
 
 type MapViewMode = 'map' | 'street';
-
-function haversineMeters(a: LatLng, b: LatLng): number {
-  const R = 6371000;
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const dLat = toRad(b.lat - a.lat);
-  const dLng = toRad(b.lng - a.lng);
-  const lat1 = toRad(a.lat);
-  const lat2 = toRad(b.lat);
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
-}
-
-function pointNearAnyAlert(point: LatLng, alerts: RouteAlert[]): boolean {
-  return alerts.some(
-    alert =>
-      isSafetyHazard(alert) &&
-      haversineMeters(point, alert.coordinate) <= alert.radiusMeters,
-  );
-}
-
-/** Split path into contiguous runs that fall inside unsafe-area radii. */
-function dangerSegments(path: LatLng[], alerts: RouteAlert[]): LatLng[][] {
-  const hazards = alerts.filter(isSafetyHazard);
-  if (path.length < 2 || hazards.length === 0) return [];
-
-  const segments: LatLng[][] = [];
-  let current: LatLng[] = [];
-
-  for (const point of path) {
-    if (pointNearAnyAlert(point, hazards)) {
-      current.push(point);
-    } else if (current.length > 0) {
-      if (current.length >= 2) segments.push(current);
-      current = [];
-    }
-  }
-  if (current.length >= 2) segments.push(current);
-  return segments;
-}
 
 async function fetchStreetViewUrl(
   lat: number,
@@ -132,10 +80,7 @@ export default function NapMap({
   showsUserLocation = false,
   followUser = false,
   fullBleed = false,
-  alerts = [],
   snappedPath = null,
-  selectedAlertId = null,
-  onAlertPress,
 }: NapMapProps) {
   const { colors, mapStyle } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -154,16 +99,6 @@ export default function NapMap({
     if (snappedPath && snappedPath.length >= 2) return snappedPath;
     return route?.polyline ? decodePolyline(route.polyline) : [];
   }, [route?.polyline, snappedPath]);
-
-  const restrictedSegments = useMemo(
-    () => dangerSegments(path, alerts),
-    [path, alerts],
-  );
-
-  const heatPoints = useMemo(
-    () => (fullBleed ? buildHazardHeatPoints(alerts, path) : []),
-    [fullBleed, alerts, path],
-  );
 
   const center = route?.origin ?? origin ?? { lat: 37.7749, lng: -122.4194 };
   const delta =
@@ -385,14 +320,6 @@ export default function NapMap({
           pitchEnabled={false}
           mapType="standard"
           customMapStyle={mapStyle}>
-          {revealGeometry && fullBleed && heatPoints.length > 0 && (
-            <Heatmap
-              points={heatPoints}
-              radius={48}
-              opacity={0.72}
-              gradient={HAZARD_HEAT_GRADIENT}
-            />
-          )}
           {revealGeometry && origin && !showsUserLocation && (
             <Marker
               coordinate={{ latitude: origin.lat, longitude: origin.lng }}
@@ -447,59 +374,6 @@ export default function NapMap({
               />
             </>
           )}
-          {revealGeometry &&
-            restrictedSegments.map((segment, i) => (
-            <Polyline
-              key={`danger-${i}`}
-              coordinates={segment.map(p => ({
-                latitude: p.lat,
-                longitude: p.lng,
-              }))}
-              strokeColor={colors.danger}
-              strokeWidth={6}
-              lineCap="round"
-              lineJoin="round"
-            />
-          ))}
-          {revealGeometry &&
-            alerts.map(alert => {
-            const selected = alert.id === selectedAlertId;
-            const danger = isSafetyHazard(alert);
-            return (
-              <React.Fragment key={alert.id}>
-                {(!fullBleed || selected) && (
-                  <Circle
-                    center={{
-                      latitude: alert.coordinate.lat,
-                      longitude: alert.coordinate.lng,
-                    }}
-                    radius={
-                      selected ? alert.radiusMeters * 1.15 : alert.radiusMeters
-                    }
-                    fillColor={
-                      fullBleed
-                        ? 'transparent'
-                        : danger
-                          ? 'rgba(155,68,68,0.22)'
-                          : 'rgba(139,106,0,0.18)'
-                    }
-                    strokeColor={danger ? colors.danger : colors.warning}
-                    strokeWidth={selected ? 2.5 : 1.5}
-                  />
-                )}
-                <Marker
-                  coordinate={{
-                    latitude: alert.coordinate.lat,
-                    longitude: alert.coordinate.lng,
-                  }}
-                  title={`${hazardLabel(alert.kind)} · ${alert.title}`}
-                  description={alert.message}
-                  pinColor={danger ? colors.dangerSoft : colors.gold}
-                  onPress={() => onAlertPress?.(alert)}
-                />
-              </React.Fragment>
-            );
-          })}
         </MapView>
       )}
 

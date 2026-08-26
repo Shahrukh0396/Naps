@@ -83,8 +83,8 @@ android {
         applicationId "com.snaps.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
-        versionName "1.0.3"
+        versionCode 3
+        versionName "1.1.0"
         resValue "string", "google_maps_api_key", (project.env.get("GOOGLE_MAPS_API_KEY") ?: "")
     }
     buildFeatures {
@@ -120,5 +120,33 @@ dependencies {
         implementation("com.facebook.react:hermes-android")
     } else {
         implementation jscFlavor
+    }
+}
+
+// Skip CMake/ninja during clean. Those tasks reconfigure from .cxx against
+// codegen JNI dirs that clean already deleted (RN New Architecture autolinking).
+tasks.configureEach { task ->
+    if (task.name.startsWith("externalNativeBuildClean")) {
+        task.enabled = false
+    }
+}
+
+afterEvaluate {
+    tasks.named("clean").configure {
+        doFirst {
+            delete file("${projectDir}/.cxx")
+            delete file("${buildDir}/generated/autolinking")
+            delete file("${buildDir}/generated/source/codegen")
+        }
+    }
+
+    // After a clean, AGP can run CMake before :app:preBuild (and therefore
+    // before library generateCodegenArtifactsFromSchema).
+    tasks.matching { task ->
+        def n = task.name
+        (n.startsWith("configureCMake") || n.startsWith("buildCMake")) &&
+            !n.contains("Clean")
+    }.configureEach { nativeTask ->
+        nativeTask.dependsOn("preBuild")
     }
 }
