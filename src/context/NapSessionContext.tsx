@@ -7,6 +7,7 @@ import React, {
   useState,
 } from 'react';
 import { AppState } from 'react-native';
+import { stopNativeNavigation } from '../services/napNavigation';
 import {
   endActiveNap,
   loadActiveNap,
@@ -44,6 +45,7 @@ export function NapSessionProvider({ children }: { children: React.ReactNode }) 
 
   const endSession = useCallback(async () => {
     setSession(null);
+    await stopNativeNavigation();
     await endActiveNap();
   }, []);
 

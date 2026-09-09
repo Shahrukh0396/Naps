@@ -6,7 +6,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import Svg, { Circle } from 'react-native-svg';
+import Svg, { Circle, Rect } from 'react-native-svg';
 import ExtendTimeSheet from './ExtendTimeSheet';
 import { armNapAlerts, cancelNapAlerts } from '../services/napTimerNotifications';
 import { useTheme, type ColorPalette } from '../theme/ThemeContext';
@@ -22,6 +22,9 @@ interface NapTimerProps {
   onDismiss: () => void;
   /** Compact floating style for overlaying a full-screen map. */
   variant?: 'card' | 'overlay';
+  /** Overlay only — hide extend / navigate controls and show a compact timer. */
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
   /** Start counting down immediately (navigation mode). */
   autoStart?: boolean;
   /** Default minutes selected in the extend sheet. */
@@ -67,6 +70,65 @@ function formatTime(seconds: number): string {
   const m = Math.floor(s / 60);
   const sec = s % 60;
   return `${m}:${sec.toString().padStart(2, '0')}`;
+}
+
+function PillProgressBorder({
+  width,
+  height,
+  progress,
+  color,
+  trackColor,
+}: {
+  width: number;
+  height: number;
+  progress: number;
+  color: string;
+  trackColor: string;
+}) {
+  if (width < 8 || height < 8) return null;
+  const stroke = 3;
+  const inset = stroke / 2;
+  const rw = Math.max(1, width - stroke);
+  const rh = Math.max(1, height - stroke);
+  const radius = rh / 2;
+  const straight = Math.max(0, rw - rh);
+  const perimeter = 2 * straight + Math.PI * rh;
+  const filled = Math.max(0, Math.min(1, progress)) * perimeter;
+
+  return (
+    <Svg
+      width={width}
+      height={height}
+      style={StyleSheet.absoluteFill}
+      pointerEvents="none">
+      <Rect
+        x={inset}
+        y={inset}
+        width={rw}
+        height={rh}
+        rx={radius}
+        ry={radius}
+        fill="none"
+        stroke={trackColor}
+        strokeWidth={stroke}
+      />
+      {filled > 0 ? (
+        <Rect
+          x={inset}
+          y={inset}
+          width={rw}
+          height={rh}
+          rx={radius}
+          ry={radius}
+          fill="none"
+          stroke={color}
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={`${filled} ${Math.max(perimeter, 1)}`}
+        />
+      ) : null}
+    </Svg>
+  );
 }
 
 function ProgressRing({
@@ -119,6 +181,8 @@ export default function NapTimer({
   alertsEnabled,
   onDismiss,
   variant = 'card',
+  collapsed = false,
+  onToggleCollapsed,
   autoStart = false,
   extendByMinutes = EXTEND_MINUTES,
   onExtend,
@@ -149,6 +213,7 @@ export default function NapTimer({
   const [endAlertFired, setEndAlertFired] = useState(false);
   const [localAlertsEnabled, setLocalAlertsEnabled] = useState(alertsEnabled);
   const [extendOpen, setExtendOpen] = useState(false);
+  const [chipSize, setChipSize] = useState({ width: 0, height: 0 });
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const alertingRef = useRef(false);
   const seededDurationRef = useRef(durationMinutes);
@@ -497,19 +562,111 @@ export default function NapTimer({
   ) : null;
 
   if (isOverlay) {
+    const overlayBorder = {
+      borderColor: isDone
+        ? colors.dangerSoft
+        : isNearEnd
+          ? colors.gold
+          : colors.lavenderBorder,
+    };
+
+    if (collapsed) {
+      const onBellPress = () => {
+        if (isRinging) {
+          handleDismissAlert();
+          return;
+        }
+        toggleAlerts();
+      };
+
+      return (
+        <View
+          style={[
+            styles.collapsedWrap,
+            isRinging && styles.cardAlerting,
+          ]}
+          onLayout={e => {
+            const { width, height } = e.nativeEvent.layout;
+            if (width !== chipSize.width || height !== chipSize.height) {
+              setChipSize({ width, height });
+            }
+          }}>
+          <PillProgressBorder
+            width={chipSize.width}
+            height={chipSize.height}
+            progress={percentComplete / 100}
+            color={ringColor}
+            trackColor={colors.lavenderBorder}
+          />
+          <View style={styles.collapsedChip}>
+          <Pressable
+            onPress={onToggleCollapsed}
+            style={styles.collapsedMainPress}
+            accessibilityRole="button"
+            accessibilityLabel={`Show timer controls, ${formatTime(secondsLeft)} remaining`}>
+            <View style={styles.collapsedMain}>
+              <Text
+                style={[
+                  styles.collapsedTime,
+                  isDone && { color: colors.danger },
+                  isNearEnd && !isDone && { color: colors.warning },
+                ]}>
+                {formatTime(secondsLeft)}
+              </Text>
+              <Text style={styles.collapsedHint} numberOfLines={1}>
+                {isDone ? 'Done' : running ? 'Nap' : 'Paused'}
+              </Text>
+            </View>
+          </Pressable>
+          <Pressable
+            onPress={onBellPress}
+            hitSlop={8}
+            style={[
+              styles.collapsedBell,
+              isRinging && styles.collapsedBellRinging,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={
+              isRinging
+                ? 'Mute ringing alert'
+                : localAlertsEnabled
+                  ? 'Mute nap alerts'
+                  : 'Enable nap alerts'
+            }>
+            <Text style={styles.collapsedBellIcon}>
+              {isRinging ? '🔔' : localAlertsEnabled ? '🔔' : '🔕'}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={onToggleCollapsed}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Show timer controls">
+            <Text style={styles.collapsedChevron}>▴</Text>
+          </Pressable>
+          </View>
+          {extendSheet}
+        </View>
+      );
+    }
+
     return (
       <View
         style={[
           styles.overlayCard,
-          {
-            borderColor: isDone
-              ? colors.dangerSoft
-              : isNearEnd
-                ? colors.gold
-                : colors.lavenderBorder,
-          },
+          overlayBorder,
           isRinging && styles.cardAlerting,
         ]}>
+        {onToggleCollapsed ? (
+          <Pressable
+            onPress={onToggleCollapsed}
+            style={styles.collapseHandle}
+            accessibilityRole="button"
+            accessibilityLabel="Hide timer controls">
+            <View style={styles.collapseHandleBar} />
+            <Text style={styles.collapseHandleText}>Hide</Text>
+          </Pressable>
+        ) : null}
         {alertBanner}
         <View style={styles.overlayBody}>
           <View style={styles.overlayTop}>
@@ -717,6 +874,82 @@ function makeStyles(colors: ColorPalette) {
       shadowOffset: { width: 0, height: 8 },
       elevation: 12,
     },
+    collapseHandle: {
+      alignItems: 'center',
+      paddingTop: 8,
+      paddingBottom: 2,
+    },
+    collapseHandleBar: {
+      width: 36,
+      height: 4,
+      borderRadius: 999,
+      backgroundColor: colors.lavender,
+      opacity: 0.7,
+    },
+    collapseHandleText: {
+      fontSize: 10,
+      fontWeight: '700',
+      color: colors.purpleMuted,
+      marginTop: 4,
+    },
+    collapsedWrap: {
+      alignSelf: 'flex-end',
+      shadowColor: colors.shadow,
+      shadowOpacity: 0.2,
+      shadowRadius: 10,
+      shadowOffset: { width: 0, height: 4 },
+      elevation: 8,
+    },
+    collapsedChip: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      backgroundColor: colors.overlay,
+      borderRadius: 999,
+      paddingLeft: 14,
+      paddingRight: 8,
+      paddingVertical: 8,
+    },
+    collapsedMainPress: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    collapsedMain: {
+      flexDirection: 'row',
+      alignItems: 'baseline',
+      gap: 6,
+    },
+    collapsedBell: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.lavenderWash,
+    },
+    collapsedBellRinging: {
+      backgroundColor: colors.gold,
+    },
+    collapsedBellIcon: {
+      fontSize: 15,
+    },
+    collapsedTime: {
+      fontSize: 20,
+      fontWeight: '800',
+      color: colors.purple,
+      letterSpacing: -0.6,
+      lineHeight: 24,
+    },
+    collapsedHint: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: colors.purpleMuted,
+    },
+    collapsedChevron: {
+      fontSize: 12,
+      fontWeight: '800',
+      color: colors.purpleMuted,
+    },
     cardAlerting: {
       shadowColor: colors.dangerAlert,
       shadowOpacity: 0.35,
@@ -757,7 +990,7 @@ function makeStyles(colors: ColorPalette) {
     body: { paddingHorizontal: 20, paddingVertical: 16 },
     overlayBody: {
       paddingHorizontal: 18,
-      paddingTop: 16,
+      paddingTop: 8,
       paddingBottom: 16,
     },
     overlayTop: {

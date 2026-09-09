@@ -34,7 +34,6 @@ import type {
   RouteVariant,
 } from '../types/route';
 import { useTheme, type ColorPalette } from '../theme/ThemeContext';
-import { openRouteInGoogleMaps } from '../utils/openGoogleMaps';
 
 function dirIcon(instruction: string): string {
   const t = instruction.toLowerCase();
@@ -322,23 +321,6 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
     });
   };
 
-  const openNapDetails = () => {
-    if (stopLoading || startingNap || !hasChosenRoute) return;
-    if (session) {
-      resumeActiveRide();
-      return;
-    }
-    if (!route.origin) {
-      showAlert({
-        title: 'Location needed',
-        message: 'Could not read your start point for the nap.',
-        tone: 'warning',
-      });
-      return;
-    }
-    goToNavigate(false);
-  };
-
   const beginNap = async () => {
     if (stopLoading || startingNap || !hasChosenRoute) return;
     if (session) {
@@ -373,18 +355,7 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
       alertAtMinutes: settings.notifyAtMinutes,
       enabled: settings.notificationsEnabled,
     });
-    try {
-      await openRouteInGoogleMaps(route);
-    } catch {
-      showAlert({
-        title: 'Could not open Google Maps',
-        message:
-          'Starting your nap in the app. You can open Maps from the next screen.',
-        tone: 'warning',
-      });
-    } finally {
-      setStartingNap(false);
-    }
+    setStartingNap(false);
     goToNavigate(true, endsAt);
   };
 
@@ -559,7 +530,7 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
             ]}>
             <Text style={[styles.navCtaText, { color: colors.ink }]}>
               {startingNap
-                ? 'Opening Google Maps…'
+                ? 'Starting navigation…'
                 : rideBlocksNewStart
                   ? 'End current nap to start a new one'
                   : activeRideIsThisRoute
@@ -567,22 +538,6 @@ export default function ResultsScreen({ navigation, route: navRoute }: ResultsSc
                     : hasChosenRoute
                       ? 'Begin Nap'
                       : 'Choose a route first'}
-            </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={openNapDetails}
-            disabled={stopLoading || startingNap || !hasChosenRoute}
-            style={[
-              styles.navCta,
-              (stopLoading || startingNap || !hasChosenRoute) && { opacity: 0.7 },
-            ]}>
-            <Text style={styles.navCtaText}>
-              {stopLoading
-                ? 'Updating route…'
-                : session
-                  ? 'Resume ride details'
-                  : 'View more details'}
             </Text>
           </Pressable>
 

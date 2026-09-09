@@ -58,7 +58,7 @@ export const SUPPORT_FAQS = [
   },
   {
     q: 'Can I open the route in Google Maps?',
-    a: 'Yes. On the route screen, tap Begin Nap — that opens the selected route in the Google Maps app first, then starts the nap timer. The timer keeps running while you navigate in Maps and will still alert you if Naps is in the background. View more details opens the nap map without leaving the app. Extend updates the route while the timer stays in Naps.',
+    a: 'Begin Nap starts in-app turn-by-turn on the Naps map. Stops are collected like checkpoints around half a kilometer away, so you can keep driving without tapping Next. Spoken turn-by-turn plays while you drive. Extend updates the route while the timer stays in Naps.',
   },
   {
     q: 'What is the nap timer for?',
