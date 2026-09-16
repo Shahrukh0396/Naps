@@ -2,6 +2,8 @@ import type { LatLng } from '../types/route';
 
 export const CHECKPOINT_RADIUS_METERS = 500;
 export const OFF_ROUTE_METERS = 75;
+/** Planned origin vs live GPS — ignore typical jitter, ask if the driver moved. */
+export const ORIGIN_MOVED_METERS = 150;
 
 const EARTH_RADIUS_M = 6371000;
 
@@ -126,4 +128,25 @@ export function parseLatLng(
 
 export function formatCoord(lat: number, lng: number): string {
   return `${lat},${lng}`;
+}
+
+/**
+ * End point for a rebuilt nap route: the Plan-screen destination, never live GPS.
+ * Loops end at the original planned start.
+ */
+export function rerouteDestination(options: {
+  plannedOrigin: LatLng;
+  destination?: string | null;
+  destinationLabel?: string | null;
+  isLoop?: boolean;
+}): string {
+  const parsed =
+    parseLatLng(options.destination) ??
+    parseLatLng(options.destinationLabel ?? null);
+  if (parsed) return formatCoord(parsed.lat, parsed.lng);
+  if (!options.isLoop) {
+    if (options.destination) return options.destination;
+    if (options.destinationLabel) return options.destinationLabel;
+  }
+  return formatCoord(options.plannedOrigin.lat, options.plannedOrigin.lng);
 }

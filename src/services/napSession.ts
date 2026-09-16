@@ -8,6 +8,8 @@ const MAX_AGE_MS = 12 * 60 * 60 * 1000;
 export interface ActiveNapSession {
   route: RouteResult;
   destinationLabel: string | null;
+  destination?: string | null;
+  plannedOrigin?: { lat: number; lng: number };
   activeStyle: RouteStyleId;
   mapsOpened: boolean;
   plannedMinutes: number;
@@ -38,6 +40,8 @@ export function navigateParamsFromSession(session: ActiveNapSession) {
     route: session.route,
     durationMinutes: Math.max(1, Math.round(session.totalSeconds / 60)),
     destinationLabel: session.destinationLabel,
+    destination: session.destination,
+    plannedOrigin: session.plannedOrigin,
     activeStyle: session.activeStyle,
     napStarted: session.running || session.mapsOpened,
     initialEndsAt: session.running ? session.endsAt ?? undefined : undefined,

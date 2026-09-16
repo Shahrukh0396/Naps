@@ -56,6 +56,23 @@ jest.mock('react-native-haptic-feedback', () => ({
   default: { trigger: jest.fn() },
 }));
 
+jest.mock('@sayem314/react-native-keep-awake', () => ({
+  activateKeepAwake: jest.fn(),
+  deactivateKeepAwake: jest.fn(),
+  useKeepAwake: jest.fn(),
+  default: () => null,
+}));
+
+jest.mock('react-native-webview', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  return {
+    __esModule: true,
+    default: View,
+    WebView: View,
+  };
+});
+
 jest.mock('@googlemaps/react-native-navigation-sdk', () => {
   const React = require('react');
   const { View } = require('react-native');

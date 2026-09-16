@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BackHandler,
   LayoutAnimation,
-  PermissionsAndroid,
   Platform,
   Pressable,
   StyleSheet,
@@ -10,7 +9,6 @@ import {
   UIManager,
   View,
 } from 'react-native';
-import Geolocation from '@react-native-community/geolocation';
 import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import NapMap from '../components/NapMap';
@@ -19,6 +17,8 @@ import { ROUTE_TYPE_META } from '../constants/content';
 import { useAppAlert } from '../context/AlertContext';
 import { useNapSession } from '../context/NapSessionContext';
 import { useNapSettings } from '../context/SettingsContext';
+import { fetchCurrentPosition } from '../hooks/useGpsLocation';
+import { useKeepAwakeWhile } from '../hooks/useKeepAwake';
 import { useNapNavigation } from '../hooks/useNapNavigation';
 import type { NavigateScreenProps } from '../navigation/types';
 import { findDirectRoute, findRoute, RouteError } from '../services/mapsApi';
@@ -26,7 +26,7 @@ import {
   navDestinationsFromRoute,
   trimRouteFromLocation,
 } from '../services/napNavigation';
-import { loadActiveNap } from '../services/napSession';
+import { loadActiveNap, saveActiveNap } from '../services/napSession';
 import {
   buildRouteAlerts,
   bypassWaypointForRestricted,
@@ -42,6 +42,7 @@ import {
   formatEtaSeconds,
   formatMeters,
   parseLatLng,
+  rerouteDestination,
 } from '../utils/geo';
 
 if (
@@ -51,58 +52,18 @@ if (
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-async function ensureAndroidPermission(): Promise<boolean> {
-  if (Platform.OS !== 'android') return true;
-  const granted = await PermissionsAndroid.request(
-    PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-    {
-      title: 'Location permission',
-      message: 'Naps needs your location to rebuild the nap route after extending.',
-      buttonPositive: 'Allow',
-      buttonNegative: 'Deny',
-    },
-  );
-  return granted === PermissionsAndroid.RESULTS.GRANTED;
-}
-
-function getCurrentPosition(): Promise<{ lat: number; lng: number }> {
-  return new Promise(async (resolve, reject) => {
-    const ok = await ensureAndroidPermission();
-    if (!ok) {
-      reject(new Error('Location access denied'));
-      return;
-    }
-    Geolocation.getCurrentPosition(
-      pos =>
-        resolve({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-        }),
-      err => reject(err),
-      {
-        timeout: 12000,
-        maximumAge: 15000,
-        enableHighAccuracy: true,
-      },
-    );
-  });
-}
-
 function resolveEndDestination(
   route: RouteResult,
   destinationLabel: string | null,
+  plannedOrigin: { lat: number; lng: number },
+  destination?: string | null,
 ): string {
-  if (!route.isLoop) {
-    if (route.destination) return route.destination;
-    if (destinationLabel) return destinationLabel;
-    const lastLeg = route.legs[route.legs.length - 1];
-    const lastStep = lastLeg?.steps[lastLeg.steps.length - 1];
-    if (lastStep?.endLocation) {
-      return formatCoord(lastStep.endLocation.lat, lastStep.endLocation.lng);
-    }
-  }
-  // Loop (or fallback): end back at the original start / home.
-  return formatCoord(route.origin.lat, route.origin.lng);
+  return rerouteDestination({
+    plannedOrigin,
+    destination: destination ?? route.destination,
+    destinationLabel,
+    isLoop: route.isLoop,
+  });
 }
 
 function alertBannerText(alerts: RouteAlert[]): string {
@@ -127,6 +88,8 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     route: initialRoute,
     durationMinutes: initialDuration,
     destinationLabel,
+    destination: plannedDestination,
+    plannedOrigin,
     activeStyle,
     napStarted = false,
     initialEndsAt,
@@ -144,6 +107,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
   const [alerts, setAlerts] = useState<RouteAlert[]>([]);
   const [snappedPath, setSnappedPath] = useState<LatLng[] | null>(null);
   const [findingAlt, setFindingAlt] = useState(false);
+  const [changingRoute, setChangingRoute] = useState(false);
   const [navActive, setNavActive] = useState(Boolean(napStarted));
   const [timerStarted, setTimerStarted] = useState(napStarted);
   const [voiceOn, setVoiceOn] = useState(false);
@@ -151,10 +115,15 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
   const napNav = useNapNavigation();
   const voiceOnRef = useRef(false);
   voiceOnRef.current = voiceOn;
+  const rideInProgress =
+    mapsOpened || napStarted || timerStarted || headingHome;
+  useKeepAwakeWhile(rideInProgress);
 
-  const homeOriginRef = useRef(initialRoute.origin);
+  const homeOriginRef = useRef(plannedOrigin ?? initialRoute.origin);
+  const plannedDestRef = useRef(plannedDestination);
   const extendCountRef = useRef(0);
   const altRouteCountRef = useRef(0);
+  const changeRouteCountRef = useRef(0);
   const recalculatingRef = useRef(false);
   const headedHomeRef = useRef(false);
   const secondsLeftRef = useRef(initialDuration * 60);
@@ -166,22 +135,38 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
   }, [alerts]);
 
   const endPin = useMemo(() => {
+    const planned = parseLatLng(plannedDestRef.current ?? null);
+    if (planned) return planned;
     if (route.isLoop) return homeOriginRef.current;
     const fromDest = parseLatLng(route.destination ?? null);
     if (fromDest) return fromDest;
     const lastLeg = route.legs[route.legs.length - 1];
     const lastStep = lastLeg?.steps[lastLeg.steps.length - 1];
-    return lastStep?.endLocation ?? null;
+    return lastStep?.endLocation ?? homeOriginRef.current;
   }, [route]);
 
   const displayRoute = useMemo(() => {
     const remainingStops = napNav.remainingDestinations.filter(d => d.checkpoint);
-    if (remainingStops.length === 0 && !napNav.snapshot) return route;
+    if (remainingStops.length === 0) return route;
     return {
       ...route,
       allWaypoints: remainingStops.map(d => ({ lat: d.lat, lng: d.lng })),
     };
-  }, [napNav.remainingDestinations, napNav.snapshot, route]);
+  }, [napNav.remainingDestinations, route]);
+
+  const followLiveLocation = useMemo(() => {
+    if (napNav.usingNative || !napNav.snapshot) return null;
+    return {
+      lat: napNav.snapshot.lat,
+      lng: napNav.snapshot.lng,
+      heading: napNav.snapshot.heading,
+    };
+  }, [
+    napNav.snapshot?.heading,
+    napNav.snapshot?.lat,
+    napNav.snapshot?.lng,
+    napNav.usingNative,
+  ]);
 
   const avoidHighwaysForNav =
     activeStyle === 'no-highway' ||
@@ -191,7 +176,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
   const startGuidance = useCallback(async () => {
     let liveRoute = route;
     try {
-      const here = await getCurrentPosition();
+      const here = await fetchCurrentPosition();
       liveRoute = trimRouteFromLocation(route, here);
       if (liveRoute.polyline !== route.polyline) {
         setRoute(liveRoute);
@@ -286,6 +271,45 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     await startGuidance();
   };
 
+  const planEndDestination = useCallback(
+    () =>
+      resolveEndDestination(
+        initialRoute,
+        destinationLabel,
+        homeOriginRef.current,
+        plannedDestRef.current,
+      ),
+    [destinationLabel, initialRoute],
+  );
+
+  const rebuildNapRouteFromHere = useCallback(
+    async (remainingMinutes: number, variation: number) => {
+      const here = await fetchCurrentPosition();
+      const destination = planEndDestination();
+      const next = await findRoute({
+        origin: formatCoord(here.lat, here.lng),
+        destination,
+        durationMinutes: remainingMinutes,
+        routeTypes: [activeStyle],
+        extraStops: initialRoute.extraStops ?? [],
+        variation,
+        minDurationMinutes: 5,
+      });
+
+      const patched: RouteResult = {
+        ...next,
+        isLoop: initialRoute.isLoop,
+        destination: initialRoute.isLoop
+          ? formatCoord(homeOriginRef.current.lat, homeOriginRef.current.lng)
+          : destination,
+        extraStops: initialRoute.extraStops,
+      };
+
+      setRoute(patched);
+    },
+    [activeStyle, initialRoute, planEndDestination],
+  );
+
   const handleExtend = useCallback(
     async (info: {
       addedMinutes: number;
@@ -305,29 +329,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
       extendCountRef.current += 1;
 
       try {
-        const here = await getCurrentPosition();
-        const destination = resolveEndDestination(initialRoute, destinationLabel);
-        const next = await findRoute({
-          origin: formatCoord(here.lat, here.lng),
-          destination,
-          durationMinutes: remainingMinutes,
-          routeTypes: [activeStyle],
-          extraStops: initialRoute.extraStops ?? [],
-          variation: extendCountRef.current,
-          minDurationMinutes: 5,
-        });
-
-        // Keep loop semantics / destination label for UI + Maps.
-        const patched: RouteResult = {
-          ...next,
-          isLoop: initialRoute.isLoop,
-          destination: initialRoute.isLoop
-            ? formatCoord(homeOriginRef.current.lat, homeOriginRef.current.lng)
-            : initialRoute.destination ?? destinationLabel,
-          extraStops: initialRoute.extraStops,
-        };
-
-        setRoute(patched);
+        await rebuildNapRouteFromHere(remainingMinutes, extendCountRef.current);
       } catch (err) {
         const message =
           err instanceof RouteError
@@ -346,8 +348,47 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
         setRecalculating(false);
       }
     },
-    [activeStyle, destinationLabel, initialRoute, showAlert],
+    [rebuildNapRouteFromHere, showAlert],
   );
+
+  const handleChangeRoute = useCallback(async () => {
+    if (recalculatingRef.current || headedHomeRef.current) return;
+    if (secondsLeftRef.current <= 0) return;
+
+    recalculatingRef.current = true;
+    setChangingRoute(true);
+    setRecalculating(true);
+    setRecalcError(null);
+
+    try {
+      const remainingMinutes = Math.max(
+        5,
+        Math.ceil(secondsLeftRef.current / 60),
+      );
+      changeRouteCountRef.current += 1;
+      await rebuildNapRouteFromHere(
+        remainingMinutes,
+        extendCountRef.current + changeRouteCountRef.current,
+      );
+    } catch (err) {
+      const message =
+        err instanceof RouteError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Could not rebuild the nap route.';
+      setRecalcError(message);
+      showAlert({
+        title: 'Could not change route',
+        message: `${message}\n\nYou're still on the current path — try again when you have a signal.`,
+        tone: 'warning',
+      });
+    } finally {
+      recalculatingRef.current = false;
+      setChangingRoute(false);
+      setRecalculating(false);
+    }
+  }, [rebuildNapRouteFromHere, showAlert]);
 
   const handleTimerComplete = useCallback(async () => {
     if (headedHomeRef.current || recalculatingRef.current) return;
@@ -358,8 +399,8 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     setRecalcError(null);
 
     try {
-      const here = await getCurrentPosition();
-      const destination = resolveEndDestination(initialRoute, destinationLabel);
+      const here = await fetchCurrentPosition();
+      const destination = planEndDestination();
       const avoidHighways =
         activeStyle === 'no-highway' ||
         activeStyle === 'scenic' ||
@@ -400,7 +441,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
       recalculatingRef.current = false;
       setRecalculating(false);
     }
-  }, [activeStyle, destinationLabel, initialRoute, showAlert]);
+  }, [activeStyle, initialRoute, planEndDestination, showAlert]);
 
   const handleTakeAlternativeRoute = useCallback(async () => {
     if (recalculatingRef.current) return;
@@ -416,8 +457,8 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     const maxAttempts = 3;
 
     try {
-      const here = await getCurrentPosition();
-      const destination = resolveEndDestination(initialRoute, destinationLabel);
+      const here = await fetchCurrentPosition();
+      const destination = planEndDestination();
       const remainingMinutes = Math.max(
         5,
         Math.ceil(secondsLeftRef.current / 60),
@@ -481,7 +522,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
                   homeOriginRef.current.lat,
                   homeOriginRef.current.lng,
                 )
-              : initialRoute.destination ?? destinationLabel,
+              : destination,
             extraStops: initialRoute.extraStops,
           };
         }
@@ -532,7 +573,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
       setFindingAlt(false);
       setRecalculating(false);
     }
-  }, [activeStyle, destinationLabel, endPin, initialRoute, showAlert]);
+  }, [activeStyle, endPin, initialRoute, planEndDestination, showAlert]);
 
   const handleSecondsLeftChange = useCallback((secondsLeft: number) => {
     secondsLeftRef.current = secondsLeft;
@@ -591,9 +632,12 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
         return;
       }
       lastPersistAtRef.current = now;
-      void persist({
+      // Write storage only — skip session context so the nav map does not re-render.
+      void saveActiveNap({
         route: routeRef.current,
         destinationLabel,
+        destination: plannedDestRef.current,
+        plannedOrigin: homeOriginRef.current,
         activeStyle,
         mapsOpened: mapsOpenedRef.current || napStarted,
         plannedMinutes: durationRef.current,
@@ -604,7 +648,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
         savedAt: now,
       });
     },
-    [activeStyle, destinationLabel, napStarted, persist],
+    [activeStyle, destinationLabel, napStarted],
   );
 
   const persistCurrentRide = useCallback(async () => {
@@ -618,6 +662,8 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     await persist({
       route: routeRef.current,
       destinationLabel,
+      destination: plannedDestRef.current,
+      plannedOrigin: homeOriginRef.current,
       activeStyle,
       mapsOpened: mapsOpenedRef.current || napStarted,
       plannedMinutes: durationRef.current,
@@ -706,40 +752,28 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
       <NapMap
         height="100%"
         origin={route.origin}
-        route={displayRoute}
+        route={napNav.usingNative ? route : displayRoute}
         destination={endPin}
         fullBleed
         showsUserLocation
         followUser={!recalculating && napNav.status !== 'active'}
         navigation={napNav.usingNative}
-        liveLocation={
-          napNav.snapshot
-            ? {
-                lat: napNav.snapshot.lat,
-                lng: napNav.snapshot.lng,
-                heading: napNav.snapshot.heading,
-              }
-            : null
-        }
+        liveLocation={followLiveLocation}
         loading={recalculating}
         loadingLabel={
           findingAlt
             ? 'Finding a clear route…'
-            : headingHome
-              ? 'Routing straight…'
-              : 'Updating your route…'
+            : changingRoute
+              ? 'Finding a new route…'
+              : headingHome
+                ? 'Routing straight…'
+                : 'Updating your route…'
         }
         error={recalcError}
         snappedPath={snappedPath}
       />
 
       <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
-        <Pressable
-          onPress={leaveNavigate}
-          style={styles.backBtn}
-          accessibilityLabel="Back">
-          <Text style={styles.backText}>← Back</Text>
-        </Pressable>
         {!(napNav.usingNative) ? (
         <View style={styles.topMeta}>
           <Text style={styles.topTitle} numberOfLines={1}>
@@ -749,9 +783,11 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
             {recalculating
               ? findingAlt
                 ? 'Finding alternate route…'
-                : headingHome
-                  ? 'Clearing stops · routing straight…'
-                  : `Updating for ${durationMinutes} min nap…`
+                : changingRoute
+                  ? 'Finding a new route…'
+                  : headingHome
+                    ? 'Clearing stops · routing straight…'
+                    : `Updating for ${durationMinutes} min nap…`
               : headingHome
                 ? `Straight to ${destinationLabel || (initialRoute.isLoop ? 'home' : 'destination')}`
                 : route.isLoop
@@ -782,7 +818,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
       </View>
 
       <View style={[styles.timerOverlay, { paddingBottom: insets.bottom + 12 }]}>
-        {alerts.length > 0 && (
+        {/* {alerts.length > 0 && (
           <View style={styles.alertBanner}>
             <View style={styles.alertBannerMain}>
               <Text style={styles.alertBannerText} numberOfLines={2}>
@@ -802,21 +838,23 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
               </Text>
             </Pressable>
           </View>
-        )}
+        )} */}
         {(recalculating || headingHome) && (
           <View style={styles.overlayHint}>
             <Text style={styles.overlayHintText}>
               {recalculating
                 ? findingAlt
                   ? 'Finding an alternate route around the unsafe area…'
-                  : headingHome
-                    ? 'Nap over — removing remaining stops and routing straight…'
-                    : 'Recalculating nap route for the extended time…'
+                  : changingRoute
+                    ? 'Finding a new nap route from where you are…'
+                    : headingHome
+                      ? 'Nap over — removing remaining stops and routing straight…'
+                      : 'Recalculating nap route for the extended time…'
                 : 'Nap over · routing straight to your destination'}
             </Text>
           </View>
         )}
-        {(napNav.hint ||
+        {/* {(napNav.hint ||
           napNav.error ||
           napNav.snapshot?.offRoute ||
           napNav.snapshot?.rerouting) &&
@@ -830,7 +868,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
                   : napNav.hint || napNav.error}
             </Text>
           </View>
-        )}
+        )} */}
         {navActive && napNav.snapshot && !napNav.usingNative && !sheetCollapsed && (
           <View style={styles.navPanel}>
             <View style={styles.navHeader}>
@@ -880,7 +918,13 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
           alertAtMinutes={settings.notifyAtMinutes}
           alertsEnabled={settings.notificationsEnabled}
           onDismiss={leaveNavigate}
+          backAction={{ onPress: leaveNavigate }}
           onExtend={handleExtend}
+          changeRouteAction={{
+            onPress: handleChangeRoute,
+            busy: changingRoute,
+            disabled: recalculating || headingHome,
+          }}
           onComplete={handleTimerComplete}
           onSecondsLeftChange={handleSecondsLeftChange}
           onTimerStateChange={handleTimerStateChange}
@@ -911,19 +955,6 @@ function makeStyles(colors: ColorPalette) {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-  },
-  backBtn: {
-    backgroundColor: colors.overlay,
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderWidth: 1.5,
-    borderColor: colors.lavenderBorder,
-  },
-  backText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.purple,
   },
   voiceBtn: {
     backgroundColor: colors.overlay,

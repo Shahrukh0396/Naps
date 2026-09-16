@@ -7,7 +7,10 @@ import com.facebook.react.uimanager.ViewManager
 
 class NapTimerNotificationsPackage : ReactPackage {
   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
-    return listOf(NapTimerNotificationsModule(reactContext))
+    return listOf(
+      NapTimerNotificationsModule(reactContext),
+      KeepAwakeModule(reactContext),
+    )
   }
 
   override fun createViewManagers(

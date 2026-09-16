@@ -57,8 +57,8 @@ export const SUPPORT_FAQS = [
     a: 'No. Location is used only to calculate routes in the moment and is not stored or shared.',
   },
   {
-    q: 'Can I open the route in Google Maps?',
-    a: 'Begin Nap starts in-app turn-by-turn on the Naps map. Stops are collected like checkpoints around half a kilometer away, so you can keep driving without tapping Next. Spoken turn-by-turn plays while you drive. Extend updates the route while the timer stays in Naps.',
+    q: 'What if i want to change my route while i am driving?',
+    a: 'Use Change route on the nap timer at any time. Naps rebuilds a new path from your current location to the destination you picked on Plan, using the same nap length and route style. The timer keeps running. Before you start driving, Refresh on the results screen loads a new set of same-style suggestions if you want a different loop first.',
   },
   {
     q: 'What is the nap timer for?',

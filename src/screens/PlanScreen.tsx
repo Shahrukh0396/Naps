@@ -255,7 +255,12 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
         activeVariation,
         routesByVariation,
         durationMinutes: activeDuration,
-        destination: destination ? endLabel || destination : null,
+        destination,
+        destinationLabel:
+          endMode === 'current' || !endLocation
+            ? null
+            : endLabel || destination,
+        origin: gpsLocation,
         preferredStyle: activeRoute,
         originLabel: 'Current location',
         restrictedOptions,

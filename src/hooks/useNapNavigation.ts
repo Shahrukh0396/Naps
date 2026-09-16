@@ -38,12 +38,11 @@ function delay(ms: number): Promise<'timeout'> {
 function snapshotFromGps(
   loc: LatLng,
   heading: number,
-  route: RouteResult,
   dests: NapNavWaypoint[],
   destIndex: number,
   steps: NavStep[],
+  path: LatLng[],
 ): NapNavSnapshot {
-  const path = route.polyline ? decodePolyline(route.polyline) : [];
   const distanceToRouteMeters =
     path.length >= 2 ? distanceToPathMeters(loc, path) : 0;
   const dest = dests[destIndex] ?? dests[dests.length - 1];
@@ -102,9 +101,16 @@ export function useNapNavigation() {
   const destsRef = useRef<NapNavWaypoint[]>([]);
   const destIndexRef = useRef(0);
   const routeRef = useRef<RouteResult | null>(null);
+  const pathRef = useRef<LatLng[]>([]);
   const watchRef = useRef<number | null>(null);
   const nativeModeRef = useRef(false);
   const lastCheckpointAtRef = useRef(0);
+  const lastPublishAtRef = useRef(0);
+  const lastPublishedLocRef = useRef<{
+    lat: number;
+    lng: number;
+    heading: number;
+  } | null>(null);
   const startOptsRef = useRef<StartNavigationOptions | null>(null);
   const lastLocRef = useRef<{ lat: number; lng: number; heading: number } | null>(
     null,
@@ -130,14 +136,39 @@ export function useNapNavigation() {
     watchRef.current = null;
   }, []);
 
+  const cacheRoute = useCallback((route: RouteResult) => {
+    routeRef.current = route;
+    pathRef.current = route.polyline ? decodePolyline(route.polyline) : [];
+  }, []);
+
   const publishSnapshot = useCallback(
-    (loc: { lat: number; lng: number; heading: number }) => {
+    (
+      loc: { lat: number; lng: number; heading: number },
+      opts?: { force?: boolean },
+    ) => {
+      const now = Date.now();
+      const prev = lastPublishedLocRef.current;
+      if (!opts?.force) {
+        if (now - lastPublishAtRef.current < 200) return;
+        if (
+          prev &&
+          distanceMeters(prev, loc) < 1.5 &&
+          Math.abs(prev.heading - loc.heading) < 5
+        ) {
+          return;
+        }
+      }
+      lastPublishAtRef.current = now;
+      lastPublishedLocRef.current = loc;
+
       const dests = destsRef.current;
       const dest = dests[destIndexRef.current] ?? dests[dests.length - 1];
-      const route = routeRef.current;
-      const path = route?.polyline ? decodePolyline(route.polyline) : [];
-      const distanceToRouteMeters =
-        path.length >= 2 ? distanceToPathMeters(loc, path) : 0;
+      // Native guidance already reports off-route; skip polyline walks on the JS thread.
+      const distanceToRouteMeters = nativeModeRef.current
+        ? 0
+        : pathRef.current.length >= 2
+          ? distanceToPathMeters(loc, pathRef.current)
+          : 0;
       setSnapshot({
         lat: loc.lat,
         lng: loc.lng,
@@ -148,7 +179,9 @@ export function useNapNavigation() {
         maneuver: turnRef.current.maneuver,
         instruction: turnRef.current.instruction,
         maneuverDistanceMeters: turnRef.current.maneuverDistanceMeters,
-        offRoute: offRouteRef.current || distanceToRouteMeters > OFF_ROUTE_METERS,
+        offRoute:
+          offRouteRef.current ||
+          (!nativeModeRef.current && distanceToRouteMeters > OFF_ROUTE_METERS),
         rerouting: reroutingRef.current,
         destinationIndex: destIndexRef.current,
         destinationTitle: dest?.title ?? 'Destination',
@@ -192,10 +225,10 @@ export function useNapNavigation() {
       const snap = snapshotFromGps(
         loc,
         heading,
-        route,
         dests,
         destIndexRef.current,
         steps,
+        pathRef.current,
       );
       setSnapshot(snap);
 
@@ -316,7 +349,7 @@ export function useNapNavigation() {
           step?.distanceMeters ??
           turnRef.current.maneuverDistanceMeters,
       };
-      if (lastLocRef.current) publishSnapshot(lastLocRef.current);
+      if (lastLocRef.current) publishSnapshot(lastLocRef.current, { force: true });
     });
     return () => removeAllListeners();
   }, [
@@ -346,7 +379,7 @@ export function useNapNavigation() {
     async (options: StartNavigationOptions, route: RouteResult) => {
       destsRef.current = options.destinations;
       destIndexRef.current = 0;
-      routeRef.current = route;
+      cacheRoute(route);
       startOptsRef.current = options;
       setRemainingDestinations(options.destinations);
       setError(null);
@@ -422,6 +455,7 @@ export function useNapNavigation() {
       clearWatch,
       navigationController,
       publishSnapshot,
+      cacheRoute,
       startJsFallback,
       waitForSdkLocation,
     ],
@@ -431,7 +465,7 @@ export function useNapNavigation() {
     async (options: StartNavigationOptions, route: RouteResult) => {
       destsRef.current = options.destinations;
       destIndexRef.current = 0;
-      routeRef.current = route;
+      cacheRoute(route);
       startOptsRef.current = options;
       setRemainingDestinations(options.destinations);
       if (nativeModeRef.current) {
@@ -446,7 +480,7 @@ export function useNapNavigation() {
       }
       destIndexRef.current = 0;
     },
-    [navigationController],
+    [cacheRoute, navigationController],
   );
 
   const recalculate = useCallback(async () => {

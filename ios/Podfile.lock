@@ -1543,6 +1543,28 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
+  - react-native-keep-awake (2.0.0):
+    - hermes-engine
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-Core-prebuilt
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - ReactNativeDependencies
+    - Yoga
   - react-native-maps/Generated (1.29.0):
     - hermes-engine
     - RCTRequired
@@ -2332,6 +2354,7 @@ DEPENDENCIES:
   - React-mutationobservernativemodule (from `../node_modules/react-native/ReactCommon/react/nativemodule/mutationobserver`)
   - react-native-config (from `../node_modules/react-native-config`)
   - "react-native-geolocation (from `../node_modules/@react-native-community/geolocation`)"
+  - "react-native-keep-awake (from `../node_modules/@sayem314/react-native-keep-awake`)"
   - react-native-maps/Google (from `../node_modules/react-native-maps`)
   - "react-native-navigation-sdk (from `../node_modules/@googlemaps/react-native-navigation-sdk`)"
   - react-native-safe-area-context (from `../node_modules/react-native-safe-area-context`)
@@ -2475,6 +2498,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-config"
   react-native-geolocation:
     :path: "../node_modules/@react-native-community/geolocation"
+  react-native-keep-awake:
+    :path: "../node_modules/@sayem314/react-native-keep-awake"
   react-native-maps:
     :path: "../node_modules/react-native-maps"
   react-native-navigation-sdk:
@@ -2614,6 +2639,7 @@ SPEC CHECKSUMS:
   React-mutationobservernativemodule: 58f6d2adf7d98e72b241608dfa2ddce414d2a4e7
   react-native-config: 6188f674e4f4b3bdfd43c22886fb04f3103793ff
   react-native-geolocation: c41d1ad8e832fa800b4e457c721e348bcc5aa147
+  react-native-keep-awake: 33963ef637f3e90a56974379fba6c4a1e0519129
   react-native-maps: aa989cfd586b96f91b4899036e01a03c1f443486
   react-native-navigation-sdk: 9644b64b78db5f4dd3be59d78ef7d25f19d903e6
   react-native-safe-area-context: c4a6d0fbf9c77ee28dab7e4d4c369df7753f20d4
@@ -2663,4 +2689,4 @@ SPEC CHECKSUMS:
 
 PODFILE CHECKSUM: 6ea3b2d4c334186bfd81c7cf089b6b8c3b1253d7
 
-COCOAPODS: 1.16.2
+COCOAPODS: 1.15.2

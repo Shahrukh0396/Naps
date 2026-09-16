@@ -95,7 +95,7 @@ function cameraForPoints(
   };
 }
 
-export default function NapMap({
+function NapMap({
   origin,
   route,
   destination = null,
@@ -131,11 +131,10 @@ export default function NapMap({
     return route?.polyline ? decodePolyline(route.polyline) : [];
   }, [route?.polyline, snappedPath]);
 
-  const center =
-    liveLocation ??
-    (showsUserLocation && path[0] ? path[0] : null) ??
+  const plannedCenter =
     route?.origin ??
     origin ??
+    (showsUserLocation && path[0] ? path[0] : null) ??
     { lat: 37.7749, lng: -122.4194 };
   const delta =
     isPreview && destination
@@ -144,27 +143,33 @@ export default function NapMap({
         ? PREVIEW_DELTA
         : ROUTE_DELTA;
 
-  const initialCamera = useMemo(() => {
+  const plannedCamera = useMemo(() => {
     const points: LatLng[] = [...path];
-    if (origin && !showsUserLocation && !liveLocation) points.push(origin);
+    if (origin && !showsUserLocation) points.push(origin);
     if (destination) points.push(destination);
-    const cam = cameraForPoints(points, center, delta);
+    const cam = cameraForPoints(points, plannedCenter, delta);
     return {
       target: cam.target,
       zoom: cam.zoom,
       tilt: navMode ? 45 : 0,
-      bearing: liveLocation?.heading ?? 0,
+      bearing: 0,
     };
   }, [
-    center,
     delta,
     destination,
-    liveLocation,
     navMode,
     origin,
     path,
+    plannedCenter,
     showsUserLocation,
   ]);
+
+  // NavigationView owns the camera. Re-applying initialCamera on GPS ticks stutters.
+  const initialCameraRef = useRef(plannedCamera);
+  if (!navMode) {
+    initialCameraRef.current = plannedCamera;
+  }
+  const initialCamera = navMode ? initialCameraRef.current : plannedCamera;
 
   const androidStyling = useMemo(
     () => ({
@@ -233,23 +238,22 @@ export default function NapMap({
         });
       }
       const points: LatLng[] = [...path];
-      if (origin && !showsUserLocation && !liveLocation) points.push(origin);
+      if (origin && !showsUserLocation) points.push(origin);
       if (destination) points.push(destination);
-      const cam = cameraForPoints(points, center, delta);
+      const cam = cameraForPoints(points, plannedCenter, delta);
       map.moveCamera({ target: cam.target, zoom: cam.zoom });
     } catch {
       // Map controller can lag a frame behind mount.
     }
   }, [
-    center,
     colors.gold,
     colors.routeGlow,
     delta,
     destination,
     navMode,
-    liveLocation,
     origin,
     path,
+    plannedCenter,
     route?.allWaypoints,
     route?.waypoint,
     showsUserLocation,
@@ -260,11 +264,31 @@ export default function NapMap({
     void syncOverlays();
   }, [mapReady, syncOverlays]);
 
+  const lastFollowRef = useRef<{
+    lat: number;
+    lng: number;
+    heading: number;
+  } | null>(null);
   useEffect(() => {
     if (navMode || !liveLocation || !mapRef.current) return;
+    const heading = liveLocation.heading ?? 0;
+    const last = lastFollowRef.current;
+    if (
+      last &&
+      Math.abs(last.lat - liveLocation.lat) < 0.00002 &&
+      Math.abs(last.lng - liveLocation.lng) < 0.00002 &&
+      Math.abs(last.heading - heading) < 3
+    ) {
+      return;
+    }
+    lastFollowRef.current = {
+      lat: liveLocation.lat,
+      lng: liveLocation.lng,
+      heading,
+    };
     mapRef.current.moveCamera({
       target: { lat: liveLocation.lat, lng: liveLocation.lng },
-      bearing: liveLocation.heading ?? 0,
+      bearing: heading,
       tilt: 45,
       zoom: 17,
     });
@@ -308,7 +332,32 @@ export default function NapMap({
     isPreview && !selectable && viewMode === 'street' && streetUrl;
   const showOverlay = Boolean(loading) && !navMode;
   const overlayLabel = loadingLabel;
-  const mapStyleJson = JSON.stringify(navMode ? navMapStyle : mapStyle);
+  const mapStyleJson = useMemo(
+    () => JSON.stringify(navMode ? navMapStyle : mapStyle),
+    [mapStyle, navMapStyle, navMode],
+  );
+
+  const handleMapReady = useCallback(() => setMapReady(true), []);
+  const handleMapViewControllerCreated = useCallback(
+    (controller: MapViewController) => {
+      mapRef.current = controller;
+    },
+    [],
+  );
+  const handleNavViewControllerCreated = useCallback(
+    (controller: NavigationViewController) => {
+      navViewRef.current = controller;
+      void controller.setNavigationUIEnabled(true);
+    },
+    [],
+  );
+  const handleMapClick = useCallback(
+    (latLng: LatLng) => {
+      onSelectCoordinate?.({ lat: latLng.lat, lng: latLng.lng });
+      setViewMode('map');
+    },
+    [onSelectCoordinate],
+  );
 
   const wrapStyle = [
     styles.wrap,
@@ -317,32 +366,39 @@ export default function NapMap({
     Platform.OS === 'android' && styles.wrapAndroid,
   ];
 
-  const sharedMapProps = {
-    style: StyleSheet.absoluteFill,
-    mapStyle: mapStyleJson,
-    mapColorScheme: darkMode ? MapColorScheme.DARK : MapColorScheme.LIGHT,
-    mapToolbarEnabled: false,
-    myLocationButtonEnabled: false,
-    myLocationEnabled: showsUserLocation,
-    compassEnabled: fullBleed || navMode,
-    trafficEnabled: navMode,
-    buildingsEnabled: navMode,
-    rotateGesturesEnabled: fullBleed || navMode,
-    tiltGesturesEnabled: navMode,
-    zoomGesturesEnabled: true,
-    scrollGesturesEnabled: true,
-    initialCameraPosition: initialCamera,
-    onMapReady: () => setMapReady(true),
-    onMapViewControllerCreated: (controller: MapViewController) => {
-      mapRef.current = controller;
-    },
-    onMapClick: selectable
-      ? (latLng: LatLng) => {
-          onSelectCoordinate?.({ lat: latLng.lat, lng: latLng.lng });
-          setViewMode('map');
-        }
-      : undefined,
-  };
+  const sharedMapProps = useMemo(
+    () => ({
+      style: StyleSheet.absoluteFill,
+      mapStyle: mapStyleJson,
+      mapColorScheme: darkMode ? MapColorScheme.DARK : MapColorScheme.LIGHT,
+      mapToolbarEnabled: false,
+      myLocationButtonEnabled: false,
+      myLocationEnabled: showsUserLocation,
+      compassEnabled: fullBleed || navMode,
+      trafficEnabled: navMode,
+      buildingsEnabled: false,
+      rotateGesturesEnabled: fullBleed || navMode,
+      tiltGesturesEnabled: navMode,
+      zoomGesturesEnabled: true,
+      scrollGesturesEnabled: true,
+      initialCameraPosition: initialCamera,
+      onMapReady: handleMapReady,
+      onMapViewControllerCreated: handleMapViewControllerCreated,
+      onMapClick: selectable ? handleMapClick : undefined,
+    }),
+    [
+      darkMode,
+      fullBleed,
+      handleMapClick,
+      handleMapReady,
+      handleMapViewControllerCreated,
+      initialCamera,
+      mapStyleJson,
+      navMode,
+      selectable,
+      showsUserLocation,
+    ],
+  );
 
   return (
     <View style={wrapStyle} collapsable={false}>
@@ -373,12 +429,7 @@ export default function NapMap({
           trafficPromptsEnabled={false}
           androidStylingOptions={androidStyling}
           iOSStylingOptions={iosStyling}
-          onNavigationViewControllerCreated={(
-            controller: NavigationViewController,
-          ) => {
-            navViewRef.current = controller;
-            void controller.setNavigationUIEnabled(true);
-          }}
+          onNavigationViewControllerCreated={handleNavViewControllerCreated}
         />
       ) : (
         <MapView {...sharedMapProps} />
@@ -559,3 +610,5 @@ function makeStyles(colors: ColorPalette) {
     },
   });
 }
+
+export default React.memo(NapMap);

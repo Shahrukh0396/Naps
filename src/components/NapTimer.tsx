@@ -46,6 +46,17 @@ interface NapTimerProps {
     active: boolean;
     onPress: () => void | Promise<void>;
   };
+  /** Rebuild the nap route from the live GPS using the same planner. */
+  changeRouteAction?: {
+    onPress: () => void | Promise<void>;
+    busy?: boolean;
+    disabled?: boolean;
+  };
+  /** Overlay — leave navigation without ending the nap. */
+  backAction?: {
+    onPress: () => void;
+    label?: string;
+  };
   /** Absolute end time so the countdown survives background / process death. */
   initialEndsAt?: number | null;
   /** Total length after extends, used when restoring a session. */
@@ -189,6 +200,8 @@ export default function NapTimer({
   onComplete,
   onSecondsLeftChange,
   beginAction,
+  changeRouteAction,
+  backAction,
   initialEndsAt = null,
   initialTotalSeconds,
   initialSecondsLeft,
@@ -514,6 +527,22 @@ export default function NapTimer({
   const beginLabel = napStarted
     ? beginAction?.activeLabel ?? 'Open Maps'
     : beginAction?.idleLabel ?? 'Begin Nap';
+  const changeRouteBusy = Boolean(changeRouteAction?.busy);
+  const changeRouteDisabled = Boolean(
+    !changeRouteAction ||
+      changeRouteAction.disabled ||
+      changeRouteBusy ||
+      isDone,
+  );
+  const changeRouteLabel = changeRouteBusy
+    ? 'Finding route…'
+    : 'Change route';
+
+  const handleChangeRoutePress = () => {
+    if (changeRouteDisabled) return;
+    void changeRouteAction?.onPress();
+  };
+  const backLabel = backAction?.label ?? 'Back';
 
   const extendSheet = (
     <ExtendTimeSheet
@@ -599,6 +628,16 @@ export default function NapTimer({
             trackColor={colors.lavenderBorder}
           />
           <View style={styles.collapsedChip}>
+          {backAction ? (
+            <Pressable
+              onPress={backAction.onPress}
+              hitSlop={8}
+              style={styles.collapsedBell}
+              accessibilityRole="button"
+              accessibilityLabel={backLabel}>
+              <Text style={styles.collapsedBackText}>←</Text>
+            </Pressable>
+          ) : null}
           <Pressable
             onPress={onToggleCollapsed}
             style={styles.collapsedMainPress}
@@ -637,6 +676,20 @@ export default function NapTimer({
               {isRinging ? '🔔' : localAlertsEnabled ? '🔔' : '🔕'}
             </Text>
           </Pressable>
+          {changeRouteAction ? (
+            <Pressable
+              onPress={handleChangeRoutePress}
+              disabled={changeRouteDisabled}
+              hitSlop={8}
+              style={[
+                styles.collapsedBell,
+                changeRouteDisabled && styles.playBtnDisabled,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={changeRouteLabel}>
+              <Text style={styles.collapsedBellIcon}>↻</Text>
+            </Pressable>
+          ) : null}
           <Pressable
             onPress={onToggleCollapsed}
             hitSlop={8}
@@ -669,6 +722,15 @@ export default function NapTimer({
         ) : null}
         {alertBanner}
         <View style={styles.overlayBody}>
+          {backAction ? (
+            <Pressable
+              onPress={backAction.onPress}
+              style={styles.overlayBackBtn}
+              accessibilityRole="button"
+              accessibilityLabel={backLabel}>
+              <Text style={styles.overlayBackText}>←  {backLabel}</Text>
+            </Pressable>
+          ) : null}
           <View style={styles.overlayTop}>
             <View style={styles.overlayTimeBlock}>
               <Text style={styles.overlayTime}>{formatTime(secondsLeft)}</Text>
@@ -727,6 +789,22 @@ export default function NapTimer({
               <Text style={styles.extendBtnText}>Extend</Text>
             </Pressable>
           </View>
+
+          {changeRouteAction ? (
+            <Pressable
+              onPress={handleChangeRoutePress}
+              disabled={changeRouteDisabled}
+              style={[
+                styles.changeRouteBtn,
+                changeRouteDisabled && styles.playBtnDisabled,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={changeRouteLabel}>
+              <Text style={styles.changeRouteText}>
+                {changeRouteBusy ? changeRouteLabel : `↻  ${changeRouteLabel}`}
+              </Text>
+            </Pressable>
+          ) : null}
 
           {beginAction && (
             <Pressable
@@ -830,6 +908,21 @@ export default function NapTimer({
                 accessibilityLabel="Choose how long to extend the nap">
                 <Text style={styles.extendBtnText}>Extend…</Text>
               </Pressable>
+              {changeRouteAction ? (
+                <Pressable
+                  onPress={handleChangeRoutePress}
+                  disabled={changeRouteDisabled}
+                  style={[
+                    styles.changeRouteBtnCompact,
+                    changeRouteDisabled && styles.playBtnDisabled,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel={changeRouteLabel}>
+                  <Text style={styles.changeRouteTextCompact}>
+                    {changeRouteBusy ? '…' : '↻ Route'}
+                  </Text>
+                </Pressable>
+              ) : null}
               <Pressable onPress={handleReset} style={styles.resetBtn}>
                 <Text style={{ fontSize: 14, color: colors.lavenderSoft }}>↻</Text>
               </Pressable>
@@ -933,6 +1026,12 @@ function makeStyles(colors: ColorPalette) {
     collapsedBellIcon: {
       fontSize: 15,
     },
+    collapsedBackText: {
+      fontSize: 16,
+      fontWeight: '800',
+      color: colors.purple,
+      lineHeight: 20,
+    },
     collapsedTime: {
       fontSize: 20,
       fontWeight: '800',
@@ -993,6 +1092,21 @@ function makeStyles(colors: ColorPalette) {
       paddingTop: 8,
       paddingBottom: 16,
     },
+    overlayBackBtn: {
+      alignSelf: 'flex-start',
+      borderRadius: 999,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      marginBottom: 10,
+      backgroundColor: colors.lavenderWash,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+    },
+    overlayBackText: {
+      fontSize: 13,
+      fontWeight: '800',
+      color: colors.purple,
+    },
     overlayTop: {
       flexDirection: 'row',
       alignItems: 'flex-start',
@@ -1038,6 +1152,34 @@ function makeStyles(colors: ColorPalette) {
       flex: 1,
       alignItems: 'center',
       paddingVertical: 12,
+    },
+    changeRouteBtn: {
+      borderRadius: 18,
+      paddingVertical: 14,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.lavenderWash,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+      marginBottom: 8,
+    },
+    changeRouteText: {
+      fontSize: 15,
+      fontWeight: '800',
+      color: colors.purple,
+    },
+    changeRouteBtnCompact: {
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 999,
+      backgroundColor: colors.lavenderWash,
+      borderWidth: 1.5,
+      borderColor: colors.lavenderBorder,
+    },
+    changeRouteTextCompact: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.purple,
     },
     beginNapBtn: {
       backgroundColor: colors.gold,
