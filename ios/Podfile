@@ -4,8 +4,94 @@ require Pod::Executable.execute_command('node', ['-p',
     "react-native/scripts/react_native_pods.rb",
     {paths: [process.argv[1]]},
   )', __dir__]).strip
+require 'yaml'
 
-platform :ios, min_ios_version_supported
+# Prebuilt React.xcframework is exposed as a module named `react`. Angle-bracket
+# includes like <react/renderer/components/rnscreens/Props.h> therefore resolve
+# against that framework's VFS overlay, which only lists RN core components.
+# Third-party codegen headers live under ReactCodegen and must be spliced in.
+def inject_codegen_headers_into_react_vfs(installer)
+  pods_root = installer.sandbox.root
+  vfs_path = File.join(pods_root, 'React-Core-prebuilt', 'React-VFS.yaml')
+  codegen_components = File.join(pods_root, 'Headers', 'Public', 'ReactCodegen', 'react', 'renderer', 'components')
+  unless File.exist?(vfs_path) && Dir.exist?(codegen_components)
+    Pod::UI.puts('[Podfile] Skipping ReactCodegen VFS inject (overlay or codegen headers missing).')
+    return
+  end
+
+  find_node = lambda do |node, path|
+    return node if path.empty?
+    (node['contents'] || []).each do |child|
+      found = find_node.call(child, path[1..]) if child['name'] == path[0]
+      return found if found
+    end
+    nil
+  end
+
+  dir_entry = lambda do |name, abs_dir|
+    contents = []
+    Dir.children(abs_dir).sort.each do |child|
+      child_path = File.join(abs_dir, child)
+      next unless File.file?(child_path)
+      contents << {
+        'name' => child,
+        'type' => 'file',
+        'external-contents' => child_path,
+      }
+    end
+    { 'name' => name, 'type' => 'directory', 'contents' => contents }
+  end
+
+  data =
+    if YAML.respond_to?(:safe_load_file)
+      YAML.safe_load_file(vfs_path, aliases: true)
+    else
+      YAML.load_file(vfs_path)
+    end
+  root = data['roots']&.first
+  components = find_node.call(root, ['react', 'renderer', 'components'])
+  if components.nil?
+    Pod::UI.puts('[Podfile] Skipping ReactCodegen VFS inject (react/renderer/components missing).')
+    return
+  end
+
+  existing = (components['contents'] || []).map { |child| child['name'] }
+  added = []
+  Dir.children(codegen_components).sort.each do |lib|
+    lib_path = File.join(codegen_components, lib)
+    next unless File.directory?(lib_path)
+    next if existing.include?(lib)
+    components['contents'] << dir_entry.call(lib, lib_path)
+    added << lib
+  end
+
+  # <react/renderer/...> in the React.framework module looks up Headers/renderer/...
+  renderer_components = find_node.call(root, ['renderer', 'components'])
+  if renderer_components.nil?
+    root['contents'] << {
+      'name' => 'renderer',
+      'type' => 'directory',
+      'contents' => [{
+        'name' => 'components',
+        'type' => 'directory',
+        'contents' => Marshal.load(Marshal.dump(components['contents'])),
+      }],
+    }
+    added << 'renderer/*'
+  end
+
+  if added.empty?
+    Pod::UI.puts('[Podfile] ReactCodegen VFS overlay already includes third-party components.')
+    return
+  end
+
+  File.write(vfs_path, YAML.dump(data))
+  Pod::UI.puts("[Podfile] Injected ReactCodegen components into React-VFS.yaml: #{added.join(', ')}")
+end
+
+ENV['RCT_NEW_ARCH_ENABLED'] = '1'
+
+platform :ios, '16.0'
 prepare_react_native_project!
 
 linkage = ENV['USE_FRAMEWORKS']
@@ -15,9 +101,21 @@ if linkage != nil
 end
 
 target 'GoogleNaps' do
-  # React Native Maps — Google provider
+  # Align RN Maps Google pods with Navigation SDK 0.16.3 (GoogleNavigation 10.13.0
+  # pins GoogleMaps 10.13.0). Default react-native-maps 1.29 pins Maps 9.4.0 /
+  # Utils 6.1.0; override is supported since 1.28.0.
+  # https://github.com/react-native-maps/react-native-maps/blob/v1.29.0/docs/installation.md
+  $RNMapsGoogleMapsVersion = '10.13.0'
+  $RNMapsGoogleMapsUtilsVersion = '7.0.0'
+
   rn_maps_path = '../node_modules/react-native-maps'
   pod 'react-native-maps/Google', :path => rn_maps_path
+  # GoogleNavigation 10.13.0 is pulled in by @googlemaps/react-native-navigation-sdk.
+
+  # AppCheckCore (Swift) is pulled in by current Google iOS SDKs. RN links pods
+  # as static libraries, so these ObjC deps need module maps.
+  pod 'GoogleUtilities', :modular_headers => true
+  pod 'RecaptchaInterop', :modular_headers => true
 
   config = use_native_modules!
 
@@ -34,5 +132,6 @@ target 'GoogleNaps' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+    inject_codegen_headers_into_react_vfs(installer)
   end
 end

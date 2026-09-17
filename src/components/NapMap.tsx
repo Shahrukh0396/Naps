@@ -2,107 +2,50 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Image,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import MapView, {
-  Circle,
-  Heatmap,
-  Marker,
-  Polyline,
-  PROVIDER_GOOGLE,
-  type MapPressEvent,
-  type Region,
-} from 'react-native-maps';
-import { GOOGLE_MAPS_API_KEY } from '../config/maps';
-import { hazardLabel, isSafetyHazard } from '../services/restrictedAreas';
-import type { LatLng as RouteLatLng, RouteAlert, RouteResult } from '../types/route';
-import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 import {
-  buildHazardHeatPoints,
-  HAZARD_HEAT_GRADIENT,
-} from '../utils/hazardHeatmap';
+  MapColorScheme,
+  MapView,
+  NavigationNightMode,
+  NavigationUIEnabledPreference,
+  NavigationView,
+  type MapViewController,
+  type NavigationViewController,
+} from '@googlemaps/react-native-navigation-sdk';
+import { GOOGLE_MAPS_API_KEY } from '../config/maps';
+import type { LatLng as RouteLatLng, RouteResult } from '../types/route';
+import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 import { decodePolyline } from '../utils/polyline';
 
-/** Street-level preview (~few blocks). Wider when an end pin is also shown. */
 const PREVIEW_DELTA = 0.004;
 const PREVIEW_WITH_END_DELTA = 0.03;
 const ROUTE_DELTA = 0.08;
 
 type LatLng = { lat: number; lng: number };
+type MapViewMode = 'map' | 'street';
 
 interface NapMapProps {
   origin: LatLng | null;
   route: RouteResult | null;
-  /** Optional end / destination pin (plan screen). */
   destination?: LatLng | null;
   loading?: boolean;
   error?: string | null;
   height?: number | '100%';
-  /** Overlay copy while the map is fetching or fitting new geometry. */
   loadingLabel?: string;
-  /** When true (or when showing origin with no route), zoom in tightly and offer Street View. */
   preview?: boolean;
-  /** Allow tapping the map to choose a destination. */
   selectable?: boolean;
   onSelectCoordinate?: (coord: LatLng) => void;
-  /** Live GPS blue dot (navigation mode). */
   showsUserLocation?: boolean;
-  /** Keep the camera following the user. */
   followUser?: boolean;
-  /** Full-bleed map without rounded corners / route badges. */
   fullBleed?: boolean;
-  /** Unsafe-area alerts (bases, crime, fire, other incidents, route advisories). */
-  alerts?: RouteAlert[];
-  /** Roads-snapped path for smoother Navigate rendering. */
   snappedPath?: RouteLatLng[] | null;
-  selectedAlertId?: string | null;
-  onAlertPress?: (alert: RouteAlert) => void;
-}
-
-type MapViewMode = 'map' | 'street';
-
-function haversineMeters(a: LatLng, b: LatLng): number {
-  const R = 6371000;
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const dLat = toRad(b.lat - a.lat);
-  const dLng = toRad(b.lng - a.lng);
-  const lat1 = toRad(a.lat);
-  const lat2 = toRad(b.lat);
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
-}
-
-function pointNearAnyAlert(point: LatLng, alerts: RouteAlert[]): boolean {
-  return alerts.some(
-    alert =>
-      isSafetyHazard(alert) &&
-      haversineMeters(point, alert.coordinate) <= alert.radiusMeters,
-  );
-}
-
-/** Split path into contiguous runs that fall inside unsafe-area radii. */
-function dangerSegments(path: LatLng[], alerts: RouteAlert[]): LatLng[][] {
-  const hazards = alerts.filter(isSafetyHazard);
-  if (path.length < 2 || hazards.length === 0) return [];
-
-  const segments: LatLng[][] = [];
-  let current: LatLng[] = [];
-
-  for (const point of path) {
-    if (pointNearAnyAlert(point, hazards)) {
-      current.push(point);
-    } else if (current.length > 0) {
-      if (current.length >= 2) segments.push(current);
-      current = [];
-    }
-  }
-  if (current.length >= 2) segments.push(current);
-  return segments;
+  navigation?: boolean;
+  liveLocation?: { lat: number; lng: number; heading?: number } | null;
 }
 
 async function fetchStreetViewUrl(
@@ -118,7 +61,41 @@ async function fetchStreetViewUrl(
   return `https://maps.googleapis.com/maps/api/streetview?size=800x400&location=${lat},${lng}&fov=80&pitch=0&radius=120&key=${key}`;
 }
 
-export default function NapMap({
+function deltaToZoom(delta: number): number {
+  if (delta <= 0.004) return 16.5;
+  if (delta <= 0.03) return 13.5;
+  if (delta <= 0.08) return 12;
+  return 11;
+}
+
+function cameraForPoints(
+  points: LatLng[],
+  fallback: LatLng,
+  fallbackDelta: number,
+): { target: LatLng; zoom: number } {
+  if (points.length === 0) {
+    return { target: fallback, zoom: deltaToZoom(fallbackDelta) };
+  }
+  if (points.length === 1) {
+    return { target: points[0], zoom: deltaToZoom(fallbackDelta) };
+  }
+  let minLat = 90;
+  let maxLat = -90;
+  let minLng = 180;
+  let maxLng = -180;
+  for (const p of points) {
+    minLat = Math.min(minLat, p.lat);
+    maxLat = Math.max(maxLat, p.lat);
+    minLng = Math.min(minLng, p.lng);
+    maxLng = Math.max(maxLng, p.lng);
+  }
+  return {
+    target: { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 },
+    zoom: deltaToZoom(Math.max(maxLat - minLat, maxLng - minLng) * 1.35),
+  };
+}
+
+function NapMap({
   origin,
   route,
   destination = null,
@@ -130,16 +107,16 @@ export default function NapMap({
   selectable = false,
   onSelectCoordinate,
   showsUserLocation = false,
-  followUser = false,
+  followUser: _followUser = false,
   fullBleed = false,
-  alerts = [],
   snappedPath = null,
-  selectedAlertId = null,
-  onAlertPress,
+  navigation = false,
+  liveLocation = null,
 }: NapMapProps) {
-  const { colors, mapStyle } = useTheme();
+  const { colors, mapStyle, navMapStyle, darkMode } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const mapRef = useRef<MapView>(null);
+  const mapRef = useRef<MapViewController | null>(null);
+  const navViewRef = useRef<NavigationViewController | null>(null);
   const isPreview = preview ?? (!route && !!origin);
   const [viewMode, setViewMode] = useState<MapViewMode>('map');
   const [streetUrl, setStreetUrl] = useState<string | null>(null);
@@ -147,163 +124,175 @@ export default function NapMap({
     'idle' | 'loading' | 'ready' | 'unavailable'
   >('idle');
   const [mapReady, setMapReady] = useState(false);
-  const [settling, setSettling] = useState(fullBleed);
-  const preciseUpdates = fullBleed;
+  const navMode = navigation && fullBleed;
 
   const path = useMemo(() => {
     if (snappedPath && snappedPath.length >= 2) return snappedPath;
     return route?.polyline ? decodePolyline(route.polyline) : [];
   }, [route?.polyline, snappedPath]);
 
-  const restrictedSegments = useMemo(
-    () => dangerSegments(path, alerts),
-    [path, alerts],
-  );
-
-  const heatPoints = useMemo(
-    () => (fullBleed ? buildHazardHeatPoints(alerts, path) : []),
-    [fullBleed, alerts, path],
-  );
-
-  const center = route?.origin ?? origin ?? { lat: 37.7749, lng: -122.4194 };
+  const plannedCenter =
+    route?.origin ??
+    origin ??
+    (showsUserLocation && path[0] ? path[0] : null) ??
+    { lat: 37.7749, lng: -122.4194 };
   const delta =
     isPreview && destination
       ? PREVIEW_WITH_END_DELTA
       : isPreview
         ? PREVIEW_DELTA
         : ROUTE_DELTA;
-  const initialRegion: Region = {
-    latitude: center.lat,
-    longitude: center.lng,
-    latitudeDelta: delta,
-    longitudeDelta: delta,
-  };
 
-  const routeKey = [
-    route?.polyline ?? '',
-    snappedPath?.length ?? 0,
-    destination?.lat ?? '',
-    destination?.lng ?? '',
-    origin?.lat ?? '',
-    origin?.lng ?? '',
-  ].join(':');
+  const plannedCamera = useMemo(() => {
+    const points: LatLng[] = [...path];
+    if (origin && !showsUserLocation) points.push(origin);
+    if (destination) points.push(destination);
+    const cam = cameraForPoints(points, plannedCenter, delta);
+    return {
+      target: cam.target,
+      zoom: cam.zoom,
+      tilt: navMode ? 45 : 0,
+      bearing: 0,
+    };
+  }, [
+    delta,
+    destination,
+    navMode,
+    origin,
+    path,
+    plannedCenter,
+    showsUserLocation,
+  ]);
 
-  const pathCoords = useMemo(
-    () => path.map(p => ({ latitude: p.lat, longitude: p.lng })),
-    [path],
+  // NavigationView owns the camera. Re-applying initialCamera on GPS ticks stutters.
+  const initialCameraRef = useRef(plannedCamera);
+  if (!navMode) {
+    initialCameraRef.current = plannedCamera;
+  }
+  const initialCamera = navMode ? initialCameraRef.current : plannedCamera;
+
+  const androidStyling = useMemo(
+    () => ({
+      primaryDayModeThemeColor: '#2D1B69',
+      secondaryDayModeThemeColor: '#F4C842',
+      primaryNightModeThemeColor: '#2D1B69',
+      secondaryNightModeThemeColor: '#F4C842',
+      headerInstructionsTextColor: darkMode ? '#FFF8F0' : '#2D1B69',
+      headerDistanceValueTextColor: darkMode ? '#FFF8F0' : '#2D1B69',
+    }),
+    [darkMode],
   );
 
-  const fitCamera = useCallback(() => {
+  const iosStyling = useMemo(
+    () => ({
+      navigationHeaderPrimaryBackgroundColor: '#2D1B69',
+      navigationHeaderSecondaryBackgroundColor: '#F4C842',
+      navigationHeaderPrimaryBackgroundColorNightMode: '#2D1B69',
+      navigationHeaderSecondaryBackgroundColorNightMode: '#F4C842',
+      navigationHeaderInstructionsTextColor: darkMode ? '#FFF8F0' : '#FFF8F0',
+      navigationHeaderDistanceValueTextColor: '#F4C842',
+    }),
+    [darkMode],
+  );
+
+  const syncOverlays = useCallback(async () => {
     const map = mapRef.current;
-    if (!map) return false;
-
-    const pad = {
-      top: fullBleed ? 100 : 48,
-      right: 48,
-      bottom: fullBleed ? 240 : 48,
-      left: 48,
-    };
-
-    if (pathCoords.length >= 2) {
-      map.fitToCoordinates(pathCoords, {
-        edgePadding: pad,
-        animated: false,
-      });
-      return true;
+    if (!map || navMode) return;
+    try {
+      map.clearMapView();
+      if (path.length >= 2) {
+        await map.addPolyline({
+          id: 'nap-route-glow',
+          points: path,
+          color: colors.routeGlow,
+          width: 12,
+        });
+        await map.addPolyline({
+          id: 'nap-route',
+          points: path,
+          color: colors.gold,
+          width: 5,
+        });
+      }
+      if (origin && !showsUserLocation) {
+        await map.addMarker({
+          id: 'nap-origin',
+          position: origin,
+          title: 'Start',
+        });
+      }
+      if (destination) {
+        await map.addMarker({
+          id: 'nap-destination',
+          position: destination,
+          title: 'End',
+        });
+      }
+      const stops =
+        route?.allWaypoints ?? (route?.waypoint ? [route.waypoint] : []);
+      for (let i = 0; i < stops.length; i++) {
+        await map.addMarker({
+          id: `nap-stop-${i}`,
+          position: stops[i],
+          title: i === 0 ? 'Nap stop' : `Stop ${i + 1}`,
+        });
+      }
+      const points: LatLng[] = [...path];
+      if (origin && !showsUserLocation) points.push(origin);
+      if (destination) points.push(destination);
+      const cam = cameraForPoints(points, plannedCenter, delta);
+      map.moveCamera({ target: cam.target, zoom: cam.zoom });
+    } catch {
+      // Map controller can lag a frame behind mount.
     }
-
-    if (origin && destination) {
-      map.fitToCoordinates(
-        [
-          { latitude: origin.lat, longitude: origin.lng },
-          { latitude: destination.lat, longitude: destination.lng },
-        ],
-        { edgePadding: pad, animated: false },
-      );
-      return true;
-    }
-
-    if (origin) {
-      map.animateToRegion(
-        {
-          latitude: origin.lat,
-          longitude: origin.lng,
-          latitudeDelta: isPreview ? PREVIEW_DELTA : ROUTE_DELTA,
-          longitudeDelta: isPreview ? PREVIEW_DELTA : ROUTE_DELTA,
-        },
-        0,
-      );
-      return true;
-    }
-
-    return false;
-  }, [destination, fullBleed, isPreview, origin, pathCoords]);
+  }, [
+    colors.gold,
+    colors.routeGlow,
+    delta,
+    destination,
+    navMode,
+    origin,
+    path,
+    plannedCenter,
+    route?.allWaypoints,
+    route?.waypoint,
+    showsUserLocation,
+  ]);
 
   useEffect(() => {
-    if (!preciseUpdates) return;
-    setSettling(true);
-  }, [routeKey, loading, preciseUpdates]);
+    if (!mapReady) return;
+    void syncOverlays();
+  }, [mapReady, syncOverlays]);
 
+  const lastFollowRef = useRef<{
+    lat: number;
+    lng: number;
+    heading: number;
+  } | null>(null);
   useEffect(() => {
-    if (preciseUpdates) {
-      if (loading || !mapReady) return;
-      const fitted = fitCamera();
-      if (!fitted) {
-        setSettling(false);
-        return;
-      }
-      const timer = setTimeout(() => setSettling(false), 160);
-      return () => clearTimeout(timer);
-    }
-
-    if (!mapRef.current) return;
-    if (followUser || pathCoords.length < 2) {
-      if (pathCoords.length < 2 && origin) {
-        if (destination) {
-          mapRef.current.fitToCoordinates(
-            [
-              { latitude: origin.lat, longitude: origin.lng },
-              { latitude: destination.lat, longitude: destination.lng },
-            ],
-            {
-              edgePadding: { top: 48, right: 48, bottom: 48, left: 48 },
-              animated: true,
-            },
-          );
-        } else {
-          mapRef.current.animateToRegion(
-            {
-              latitude: origin.lat,
-              longitude: origin.lng,
-              latitudeDelta: PREVIEW_DELTA,
-              longitudeDelta: PREVIEW_DELTA,
-            },
-            350,
-          );
-        }
-      }
+    if (navMode || !liveLocation || !mapRef.current) return;
+    const heading = liveLocation.heading ?? 0;
+    const last = lastFollowRef.current;
+    if (
+      last &&
+      Math.abs(last.lat - liveLocation.lat) < 0.00002 &&
+      Math.abs(last.lng - liveLocation.lng) < 0.00002 &&
+      Math.abs(last.heading - heading) < 3
+    ) {
       return;
     }
-    mapRef.current.fitToCoordinates(pathCoords, {
-      edgePadding: {
-        top: 40,
-        right: 40,
-        bottom: 40,
-        left: 40,
-      },
-      animated: true,
+    lastFollowRef.current = {
+      lat: liveLocation.lat,
+      lng: liveLocation.lng,
+      heading,
+    };
+    mapRef.current.moveCamera({
+      target: { lat: liveLocation.lat, lng: liveLocation.lng },
+      bearing: heading,
+      tilt: 45,
+      zoom: 17,
     });
-  }, [
-    destination,
-    fitCamera,
-    followUser,
-    loading,
-    mapReady,
-    origin,
-    pathCoords,
-    preciseUpdates,
-    routeKey,
-  ]);
+  }, [liveLocation, navMode]);
 
   useEffect(() => {
     if (!isPreview || !origin || selectable) {
@@ -339,168 +328,111 @@ export default function NapMap({
     };
   }, [isPreview, selectable, origin?.lat, origin?.lng]);
 
-  const handlePress = (e: MapPressEvent) => {
-    if (!selectable || !onSelectCoordinate) return;
-    const { latitude, longitude } = e.nativeEvent.coordinate;
-    onSelectCoordinate({ lat: latitude, lng: longitude });
-    setViewMode('map');
-  };
-
   const showStreet =
     isPreview && !selectable && viewMode === 'street' && streetUrl;
-  const showOverlay = loading || (preciseUpdates && settling);
+  const showOverlay = Boolean(loading) && !navMode;
   const overlayLabel = loadingLabel;
-  const revealGeometry = !preciseUpdates || (!loading && !settling);
+  const mapStyleJson = useMemo(
+    () => JSON.stringify(navMode ? navMapStyle : mapStyle),
+    [mapStyle, navMapStyle, navMode],
+  );
+
+  const handleMapReady = useCallback(() => setMapReady(true), []);
+  const handleMapViewControllerCreated = useCallback(
+    (controller: MapViewController) => {
+      mapRef.current = controller;
+    },
+    [],
+  );
+  const handleNavViewControllerCreated = useCallback(
+    (controller: NavigationViewController) => {
+      navViewRef.current = controller;
+      void controller.setNavigationUIEnabled(true);
+    },
+    [],
+  );
+  const handleMapClick = useCallback(
+    (latLng: LatLng) => {
+      onSelectCoordinate?.({ lat: latLng.lat, lng: latLng.lng });
+      setViewMode('map');
+    },
+    [onSelectCoordinate],
+  );
 
   const wrapStyle = [
     styles.wrap,
     fullBleed && styles.wrapFullBleed,
     height === '100%' ? styles.wrapFlex : { height },
+    Platform.OS === 'android' && styles.wrapAndroid,
   ];
 
+  const sharedMapProps = useMemo(
+    () => ({
+      style: StyleSheet.absoluteFill,
+      mapStyle: mapStyleJson,
+      mapColorScheme: darkMode ? MapColorScheme.DARK : MapColorScheme.LIGHT,
+      mapToolbarEnabled: false,
+      myLocationButtonEnabled: false,
+      myLocationEnabled: showsUserLocation,
+      compassEnabled: fullBleed || navMode,
+      trafficEnabled: navMode,
+      buildingsEnabled: false,
+      rotateGesturesEnabled: fullBleed || navMode,
+      tiltGesturesEnabled: navMode,
+      zoomGesturesEnabled: true,
+      scrollGesturesEnabled: true,
+      initialCameraPosition: initialCamera,
+      onMapReady: handleMapReady,
+      onMapViewControllerCreated: handleMapViewControllerCreated,
+      onMapClick: selectable ? handleMapClick : undefined,
+    }),
+    [
+      darkMode,
+      fullBleed,
+      handleMapClick,
+      handleMapReady,
+      handleMapViewControllerCreated,
+      initialCamera,
+      mapStyleJson,
+      navMode,
+      selectable,
+      showsUserLocation,
+    ],
+  );
+
   return (
-    <View style={wrapStyle}>
+    <View style={wrapStyle} collapsable={false}>
       {showStreet ? (
         <Image
           source={{ uri: streetUrl }}
           style={StyleSheet.absoluteFill}
           resizeMode="cover"
         />
-      ) : (
-        <MapView
-          ref={mapRef}
-          style={StyleSheet.absoluteFill}
-          provider={PROVIDER_GOOGLE}
-          initialRegion={initialRegion}
-          onMapReady={() => setMapReady(true)}
-          onPress={handlePress}
-          showsUserLocation={showsUserLocation}
-          followsUserLocation={
-            followUser && (!preciseUpdates || (!loading && !settling))
+      ) : navMode ? (
+        <NavigationView
+          {...sharedMapProps}
+          navigationUIEnabledPreference={
+            NavigationUIEnabledPreference.AUTOMATIC
           }
-          showsMyLocationButton={false}
-          showsCompass={fullBleed}
-          toolbarEnabled={false}
-          rotateEnabled={fullBleed}
-          pitchEnabled={false}
-          mapType="standard"
-          customMapStyle={mapStyle}>
-          {revealGeometry && fullBleed && heatPoints.length > 0 && (
-            <Heatmap
-              points={heatPoints}
-              radius={48}
-              opacity={0.72}
-              gradient={HAZARD_HEAT_GRADIENT}
-            />
-          )}
-          {revealGeometry && origin && !showsUserLocation && (
-            <Marker
-              coordinate={{ latitude: origin.lat, longitude: origin.lng }}
-              title="Start"
-              pinColor={colors.purple}
-            />
-          )}
-          {revealGeometry && destination && (
-            <Marker
-              coordinate={{
-                latitude: destination.lat,
-                longitude: destination.lng,
-              }}
-              title="End"
-              pinColor={colors.gold}
-            />
-          )}
-          {revealGeometry &&
-            route?.allWaypoints?.map((wp, i) => (
-            <Marker
-              key={`wp-${i}`}
-              coordinate={{ latitude: wp.lat, longitude: wp.lng }}
-              title={i === 0 ? 'Nap stop' : `Stop ${i + 1}`}
-              pinColor={colors.lavender}
-            />
-          ))}
-          {revealGeometry && route?.allWaypoints == null && route?.waypoint && (
-            <Marker
-              coordinate={{
-                latitude: route.waypoint.lat,
-                longitude: route.waypoint.lng,
-              }}
-              title="Turnaround"
-              pinColor={colors.gold}
-            />
-          )}
-          {revealGeometry && pathCoords.length > 1 && (
-            <>
-              <Polyline
-                coordinates={pathCoords}
-                strokeColor={colors.routeGlow}
-                strokeWidth={12}
-                lineCap="round"
-                lineJoin="round"
-              />
-              <Polyline
-                coordinates={pathCoords}
-                strokeColor={colors.gold}
-                strokeWidth={5}
-                lineCap="round"
-                lineJoin="round"
-              />
-            </>
-          )}
-          {revealGeometry &&
-            restrictedSegments.map((segment, i) => (
-            <Polyline
-              key={`danger-${i}`}
-              coordinates={segment.map(p => ({
-                latitude: p.lat,
-                longitude: p.lng,
-              }))}
-              strokeColor={colors.danger}
-              strokeWidth={6}
-              lineCap="round"
-              lineJoin="round"
-            />
-          ))}
-          {revealGeometry &&
-            alerts.map(alert => {
-            const selected = alert.id === selectedAlertId;
-            const danger = isSafetyHazard(alert);
-            return (
-              <React.Fragment key={alert.id}>
-                {(!fullBleed || selected) && (
-                  <Circle
-                    center={{
-                      latitude: alert.coordinate.lat,
-                      longitude: alert.coordinate.lng,
-                    }}
-                    radius={
-                      selected ? alert.radiusMeters * 1.15 : alert.radiusMeters
-                    }
-                    fillColor={
-                      fullBleed
-                        ? 'transparent'
-                        : danger
-                          ? 'rgba(155,68,68,0.22)'
-                          : 'rgba(139,106,0,0.18)'
-                    }
-                    strokeColor={danger ? colors.danger : colors.warning}
-                    strokeWidth={selected ? 2.5 : 1.5}
-                  />
-                )}
-                <Marker
-                  coordinate={{
-                    latitude: alert.coordinate.lat,
-                    longitude: alert.coordinate.lng,
-                  }}
-                  title={`${hazardLabel(alert.kind)} · ${alert.title}`}
-                  description={alert.message}
-                  pinColor={danger ? colors.dangerSoft : colors.gold}
-                  onPress={() => onAlertPress?.(alert)}
-                />
-              </React.Fragment>
-            );
-          })}
-        </MapView>
+          navigationNightMode={
+            darkMode
+              ? NavigationNightMode.FORCE_NIGHT
+              : NavigationNightMode.FORCE_DAY
+          }
+          headerEnabled
+          footerEnabled={false}
+          tripProgressBarEnabled={false}
+          speedometerEnabled
+          speedLimitIconEnabled
+          recenterButtonEnabled
+          reportIncidentButtonEnabled={false}
+          trafficPromptsEnabled={false}
+          androidStylingOptions={androidStyling}
+          iOSStylingOptions={iosStyling}
+          onNavigationViewControllerCreated={handleNavViewControllerCreated}
+        />
+      ) : (
+        <MapView {...sharedMapProps} />
       )}
 
       {selectable && (
@@ -590,6 +522,9 @@ function makeStyles(colors: ColorPalette) {
     wrapFlex: {
       flex: 1,
     },
+    wrapAndroid: {
+      overflow: 'visible',
+    },
     pickHint: {
       position: 'absolute',
       left: 10,
@@ -675,3 +610,5 @@ function makeStyles(colors: ColorPalette) {
     },
   });
 }
+
+export default React.memo(NapMap);

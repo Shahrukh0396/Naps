@@ -145,20 +145,26 @@ function migrateStored(raw: LegacyStored): NapSettings {
 interface SettingsContextValue {
   settings: NapSettings;
   ready: boolean;
+  /** Resolved theme: unsaved preview override, otherwise persisted setting. */
+  darkMode: boolean;
   updateSettings: (next: NapSettings) => Promise<void>;
-  setDarkMode: (darkMode: boolean) => Promise<void>;
+  setDarkModeOverride: (darkMode: boolean | null) => void;
 }
 
 const SettingsContext = createContext<SettingsContextValue>({
   settings: DEFAULT_SETTINGS,
   ready: false,
+  darkMode: false,
   updateSettings: async () => {},
-  setDarkMode: async () => {},
+  setDarkModeOverride: () => {},
 });
 
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<NapSettings>(DEFAULT_SETTINGS);
   const [ready, setReady] = useState(false);
+  const [darkModeOverride, setDarkModeOverrideState] = useState<boolean | null>(
+    null,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -198,21 +204,26 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         savedPlaces: sanitizeSavedPlacesForSave(next.savedPlaces),
       };
       await persist(cleaned);
+      setDarkModeOverrideState(null);
     },
     [persist],
   );
 
-  const setDarkMode = useCallback(async (darkMode: boolean) => {
-    setSettings(prev => {
-      const next = { ...prev, darkMode };
-      void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      return next;
-    });
+  const setDarkModeOverride = useCallback((darkMode: boolean | null) => {
+    setDarkModeOverrideState(darkMode);
   }, []);
 
+  const darkMode = darkModeOverride ?? settings.darkMode;
+
   const value = useMemo(
-    () => ({ settings, ready, updateSettings, setDarkMode }),
-    [settings, ready, updateSettings, setDarkMode],
+    () => ({
+      settings,
+      ready,
+      darkMode,
+      updateSettings,
+      setDarkModeOverride,
+    }),
+    [settings, ready, darkMode, updateSettings, setDarkModeOverride],
   );
 
   return (

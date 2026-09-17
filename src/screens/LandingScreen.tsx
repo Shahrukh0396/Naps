@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CompanyTag from '../components/CompanyTag';
 import GradientBackground from '../components/GradientBackground';
 import type { LandingScreenProps } from '../navigation/types';
+import { loadActiveNap, navigateParamsFromSession } from '../services/napSession';
 import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 
 const LOAD_DURATION_MS = 2200;
@@ -38,9 +39,15 @@ export default function LandingScreen({ navigation }: LandingScreenProps) {
       easing: Easing.inOut(Easing.cubic),
       useNativeDriver: false,
     }).start(({ finished }) => {
-      if (finished) {
+      if (!finished) return;
+      void (async () => {
+        const session = await loadActiveNap();
+        if (session) {
+          navigation.replace('Navigate', navigateParamsFromSession(session));
+          return;
+        }
         navigation.replace('MainTabs');
-      }
+      })();
     });
   }, [logoOpacity, logoScale, navigation, progress]);
 

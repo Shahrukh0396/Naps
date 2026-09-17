@@ -19,3 +19,23 @@ buildscript {
 }
 
 apply plugin: "com.facebook.react.rootproject"
+
+// CMake configure/build must wait for library codegen. RN already makes
+// :app:preBuild depend on other preBuild tasks (which run codegen), but AGP
+// still schedules configureCMake* in parallel after a clean, so autolinking
+// add_subdirectory() hits missing codegen/jni dirs.
+gradle.projectsEvaluated {
+    rootProject.subprojects.each { proj ->
+        def preBuild = proj.tasks.findByName("preBuild")
+        if (preBuild == null) {
+            return
+        }
+        proj.tasks.matching { task ->
+            def n = task.name
+            (n.startsWith("configureCMake") || n.startsWith("buildCMake")) &&
+                !n.contains("Clean")
+        }.configureEach { nativeTask ->
+            nativeTask.dependsOn(preBuild)
+        }
+    }
+}

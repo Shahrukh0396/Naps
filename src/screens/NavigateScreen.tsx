@@ -1,22 +1,32 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  PermissionsAndroid,
+  BackHandler,
+  LayoutAnimation,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
+  UIManager,
   View,
 } from 'react-native';
-import Geolocation from '@react-native-community/geolocation';
+import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import NapMap from '../components/NapMap';
 import NapTimer from '../components/NapTimer';
 import { ROUTE_TYPE_META } from '../constants/content';
 import { useAppAlert } from '../context/AlertContext';
+import { useNapSession } from '../context/NapSessionContext';
 import { useNapSettings } from '../context/SettingsContext';
+import { fetchCurrentPosition } from '../hooks/useGpsLocation';
+import { useKeepAwakeWhile } from '../hooks/useKeepAwake';
+import { useNapNavigation } from '../hooks/useNapNavigation';
 import type { NavigateScreenProps } from '../navigation/types';
 import { findDirectRoute, findRoute, RouteError } from '../services/mapsApi';
+import {
+  navDestinationsFromRoute,
+  trimRouteFromLocation,
+} from '../services/napNavigation';
+import { loadActiveNap, saveActiveNap } from '../services/napSession';
 import {
   buildRouteAlerts,
   bypassWaypointForRestricted,
@@ -26,86 +36,34 @@ import {
 } from '../services/restrictedAreas';
 import type { LatLng, RouteAlert, RouteResult } from '../types/route';
 import { useTheme, type ColorPalette } from '../theme/ThemeContext';
-import { openRouteInGoogleMaps } from '../utils/openGoogleMaps';
+import {
+  dirIcon,
+  formatCoord,
+  formatEtaSeconds,
+  formatMeters,
+  parseLatLng,
+  rerouteDestination,
+} from '../utils/geo';
 
-function parseLatLng(value: string | null | undefined): { lat: number; lng: number } | null {
-  if (!value) return null;
-  const parts = value.split(',');
-  if (parts.length !== 2) return null;
-  const lat = parseFloat(parts[0]);
-  const lng = parseFloat(parts[1]);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
-  return { lat, lng };
-}
-
-function formatCoord(lat: number, lng: number): string {
-  return `${lat},${lng}`;
-}
-
-async function ensureAndroidPermission(): Promise<boolean> {
-  if (Platform.OS !== 'android') return true;
-  const granted = await PermissionsAndroid.request(
-    PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-    {
-      title: 'Location permission',
-      message: 'Naps needs your location to rebuild the nap route after extending.',
-      buttonPositive: 'Allow',
-      buttonNegative: 'Deny',
-    },
-  );
-  return granted === PermissionsAndroid.RESULTS.GRANTED;
-}
-
-function getCurrentPosition(): Promise<{ lat: number; lng: number }> {
-  return new Promise(async (resolve, reject) => {
-    const ok = await ensureAndroidPermission();
-    if (!ok) {
-      reject(new Error('Location access denied'));
-      return;
-    }
-    Geolocation.getCurrentPosition(
-      pos =>
-        resolve({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-        }),
-      err => reject(err),
-      {
-        timeout: 12000,
-        maximumAge: 15000,
-        enableHighAccuracy: true,
-      },
-    );
-  });
+if (
+  Platform.OS === 'android' &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
 function resolveEndDestination(
   route: RouteResult,
   destinationLabel: string | null,
+  plannedOrigin: { lat: number; lng: number },
+  destination?: string | null,
 ): string {
-  if (!route.isLoop) {
-    if (route.destination) return route.destination;
-    if (destinationLabel) return destinationLabel;
-    const lastLeg = route.legs[route.legs.length - 1];
-    const lastStep = lastLeg?.steps[lastLeg.steps.length - 1];
-    if (lastStep?.endLocation) {
-      return formatCoord(lastStep.endLocation.lat, lastStep.endLocation.lng);
-    }
-  }
-  // Loop (or fallback): end back at the original start / home.
-  return formatCoord(route.origin.lat, route.origin.lng);
-}
-
-function dirIcon(instruction: string): string {
-  const t = instruction.toLowerCase();
-  if (t.includes('left')) return '↰';
-  if (t.includes('right')) return '↱';
-  if (t.includes('u-turn') || t.includes('uturn')) return '↩';
-  if (t.includes('roundabout') || t.includes('circle')) return '↻';
-  if (t.includes('merge') || t.includes('ramp') || t.includes('exit')) return '↗';
-  if (t.includes('arrive') || t.includes('destination')) return '📍';
-  return '↑';
+  return rerouteDestination({
+    plannedOrigin,
+    destination: destination ?? route.destination,
+    destinationLabel,
+    isLoop: route.isLoop,
+  });
 }
 
 function alertBannerText(alerts: RouteAlert[]): string {
@@ -125,12 +83,18 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const { settings } = useNapSettings();
   const showAlert = useAppAlert();
+  const { persist, endSession } = useNapSession();
   const {
     route: initialRoute,
     durationMinutes: initialDuration,
     destinationLabel,
+    destination: plannedDestination,
+    plannedOrigin,
     activeStyle,
     napStarted = false,
+    initialEndsAt,
+    initialTotalSeconds,
+    initialSecondsLeft,
   } = navRoute.params;
   const meta = ROUTE_TYPE_META[activeStyle];
 
@@ -142,48 +106,138 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
   const [recalcError, setRecalcError] = useState<string | null>(null);
   const [alerts, setAlerts] = useState<RouteAlert[]>([]);
   const [snappedPath, setSnappedPath] = useState<LatLng[] | null>(null);
-  const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
   const [findingAlt, setFindingAlt] = useState(false);
-  const [navActive, setNavActive] = useState(false);
-  const [navExpanded, setNavExpanded] = useState(false);
-  const [navStep, setNavStep] = useState(0);
+  const [changingRoute, setChangingRoute] = useState(false);
+  const [navActive, setNavActive] = useState(Boolean(napStarted));
+  const [timerStarted, setTimerStarted] = useState(napStarted);
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [sheetCollapsed, setSheetCollapsed] = useState(false);
+  const napNav = useNapNavigation();
+  const voiceOnRef = useRef(false);
+  voiceOnRef.current = voiceOn;
+  const rideInProgress =
+    mapsOpened || napStarted || timerStarted || headingHome;
+  useKeepAwakeWhile(rideInProgress);
 
-  const homeOriginRef = useRef(initialRoute.origin);
+  const homeOriginRef = useRef(plannedOrigin ?? initialRoute.origin);
+  const plannedDestRef = useRef(plannedDestination);
   const extendCountRef = useRef(0);
   const altRouteCountRef = useRef(0);
+  const changeRouteCountRef = useRef(0);
   const recalculatingRef = useRef(false);
   const headedHomeRef = useRef(false);
   const secondsLeftRef = useRef(initialDuration * 60);
   const alertsRef = useRef<RouteAlert[]>([]);
+  const guidanceStartedRef = useRef(false);
 
   useEffect(() => {
     alertsRef.current = alerts;
   }, [alerts]);
 
   const endPin = useMemo(() => {
+    const planned = parseLatLng(plannedDestRef.current ?? null);
+    if (planned) return planned;
     if (route.isLoop) return homeOriginRef.current;
     const fromDest = parseLatLng(route.destination ?? null);
     if (fromDest) return fromDest;
     const lastLeg = route.legs[route.legs.length - 1];
     const lastStep = lastLeg?.steps[lastLeg.steps.length - 1];
-    return lastStep?.endLocation ?? null;
+    return lastStep?.endLocation ?? homeOriginRef.current;
   }, [route]);
 
-  const selectedAlert = useMemo(
-    () => alerts.find(a => a.id === selectedAlertId) ?? null,
-    [alerts, selectedAlertId],
-  );
+  const displayRoute = useMemo(() => {
+    const remainingStops = napNav.remainingDestinations.filter(d => d.checkpoint);
+    if (remainingStops.length === 0) return route;
+    return {
+      ...route,
+      allWaypoints: remainingStops.map(d => ({ lat: d.lat, lng: d.lng })),
+    };
+  }, [napNav.remainingDestinations, route]);
 
-  const allNavSteps = useMemo(
-    () => route.legs.flatMap(leg => leg.steps),
-    [route],
-  );
-  const safeNavStep = Math.min(navStep, Math.max(0, allNavSteps.length - 1));
-  const currentNavStep = allNavSteps[safeNavStep] ?? null;
+  const followLiveLocation = useMemo(() => {
+    if (napNav.usingNative || !napNav.snapshot) return null;
+    return {
+      lat: napNav.snapshot.lat,
+      lng: napNav.snapshot.lng,
+      heading: napNav.snapshot.heading,
+    };
+  }, [
+    napNav.snapshot?.heading,
+    napNav.snapshot?.lat,
+    napNav.snapshot?.lng,
+    napNav.usingNative,
+  ]);
+
+  const avoidHighwaysForNav =
+    activeStyle === 'no-highway' ||
+    activeStyle === 'scenic' ||
+    activeStyle === 'fewer-lights';
+
+  const startGuidance = useCallback(async () => {
+    let liveRoute = route;
+    try {
+      const here = await fetchCurrentPosition();
+      liveRoute = trimRouteFromLocation(route, here);
+      if (liveRoute.polyline !== route.polyline) {
+        setRoute(liveRoute);
+      }
+    } catch {
+      // Guidance still starts on the planned path if GPS is unavailable.
+    }
+    const dests = navDestinationsFromRoute(liveRoute, endPin);
+    if (dests.length === 0) {
+      showAlert({
+        title: 'No destination',
+        message: 'This nap route has no stops to navigate to.',
+        tone: 'warning',
+      });
+      return;
+    }
+    setNavActive(true);
+    setMapsOpened(true);
+    guidanceStartedRef.current = true;
+    await napNav.start(
+      {
+        destinations: dests,
+        avoidHighways: avoidHighwaysForNav,
+        voice: voiceOnRef.current,
+      },
+      liveRoute,
+    );
+  }, [avoidHighwaysForNav, endPin, napNav, route, showAlert]);
+
+  const startGuidanceRef = useRef(startGuidance);
+  startGuidanceRef.current = startGuidance;
+
+  useEffect(() => {
+    if (!napStarted) return;
+    void startGuidanceRef.current();
+  }, [napStarted]);
+
+  useEffect(() => {
+    if (!guidanceStartedRef.current) return;
+    if (napNav.status !== 'active') return;
+    const dests = navDestinationsFromRoute(route, endPin);
+    void napNav.update(
+      {
+        destinations: dests,
+        avoidHighways: avoidHighwaysForNav,
+        voice: voiceOnRef.current,
+      },
+      route,
+    );
+  }, [route.polyline]);
+
+  useEffect(() => {
+    if (!napNav.hint?.startsWith('Collected')) return;
+    ReactNativeHapticFeedback.trigger('notificationSuccess', {
+      enableVibrateFallback: true,
+      ignoreAndroidSystemSettings: false,
+    });
+  }, [napNav.hint]);
 
   useEffect(() => {
     let cancelled = false;
-    setSelectedAlertId(null);
 
     (async () => {
       const result = await buildRouteAlerts(route.polyline, {
@@ -213,25 +267,48 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     endPin?.lng,
   ]);
 
-  useEffect(() => {
-    setNavStep(0);
-    const hasSteps = route.legs.some(leg => leg.steps.length > 0);
-    if (!hasSteps) setNavActive(false);
-  }, [route.polyline]);
-
-  /** Opens Google Maps only when the user taps the Maps button. */
-  const handleOpenMaps = async () => {
-    try {
-      await openRouteInGoogleMaps(route);
-      setMapsOpened(true);
-    } catch {
-      showAlert({
-        title: 'Could not open Google Maps',
-        message: 'Try again when you have a signal, or use the in-app map.',
-        tone: 'warning',
-      });
-    }
+  const handleStartNavigation = async () => {
+    await startGuidance();
   };
+
+  const planEndDestination = useCallback(
+    () =>
+      resolveEndDestination(
+        initialRoute,
+        destinationLabel,
+        homeOriginRef.current,
+        plannedDestRef.current,
+      ),
+    [destinationLabel, initialRoute],
+  );
+
+  const rebuildNapRouteFromHere = useCallback(
+    async (remainingMinutes: number, variation: number) => {
+      const here = await fetchCurrentPosition();
+      const destination = planEndDestination();
+      const next = await findRoute({
+        origin: formatCoord(here.lat, here.lng),
+        destination,
+        durationMinutes: remainingMinutes,
+        routeTypes: [activeStyle],
+        extraStops: initialRoute.extraStops ?? [],
+        variation,
+        minDurationMinutes: 5,
+      });
+
+      const patched: RouteResult = {
+        ...next,
+        isLoop: initialRoute.isLoop,
+        destination: initialRoute.isLoop
+          ? formatCoord(homeOriginRef.current.lat, homeOriginRef.current.lng)
+          : destination,
+        extraStops: initialRoute.extraStops,
+      };
+
+      setRoute(patched);
+    },
+    [activeStyle, initialRoute, planEndDestination],
+  );
 
   const handleExtend = useCallback(
     async (info: {
@@ -252,29 +329,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
       extendCountRef.current += 1;
 
       try {
-        const here = await getCurrentPosition();
-        const destination = resolveEndDestination(initialRoute, destinationLabel);
-        const next = await findRoute({
-          origin: formatCoord(here.lat, here.lng),
-          destination,
-          durationMinutes: remainingMinutes,
-          routeTypes: [activeStyle],
-          extraStops: initialRoute.extraStops ?? [],
-          variation: extendCountRef.current,
-          minDurationMinutes: 5,
-        });
-
-        // Keep loop semantics / destination label for UI + Maps.
-        const patched: RouteResult = {
-          ...next,
-          isLoop: initialRoute.isLoop,
-          destination: initialRoute.isLoop
-            ? formatCoord(homeOriginRef.current.lat, homeOriginRef.current.lng)
-            : initialRoute.destination ?? destinationLabel,
-          extraStops: initialRoute.extraStops,
-        };
-
-        setRoute(patched);
+        await rebuildNapRouteFromHere(remainingMinutes, extendCountRef.current);
       } catch (err) {
         const message =
           err instanceof RouteError
@@ -285,7 +340,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
         setRecalcError(message);
         showAlert({
           title: 'Could not update route',
-          message: `${message}\n\nTimer was extended — tap Begin Nap or Open Maps when you have a signal if you want turn-by-turn.`,
+          message: `${message}\n\nTimer was extended — tap Begin Nap when you have a signal if you want turn-by-turn.`,
           tone: 'warning',
         });
       } finally {
@@ -293,8 +348,47 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
         setRecalculating(false);
       }
     },
-    [activeStyle, destinationLabel, initialRoute, showAlert],
+    [rebuildNapRouteFromHere, showAlert],
   );
+
+  const handleChangeRoute = useCallback(async () => {
+    if (recalculatingRef.current || headedHomeRef.current) return;
+    if (secondsLeftRef.current <= 0) return;
+
+    recalculatingRef.current = true;
+    setChangingRoute(true);
+    setRecalculating(true);
+    setRecalcError(null);
+
+    try {
+      const remainingMinutes = Math.max(
+        5,
+        Math.ceil(secondsLeftRef.current / 60),
+      );
+      changeRouteCountRef.current += 1;
+      await rebuildNapRouteFromHere(
+        remainingMinutes,
+        extendCountRef.current + changeRouteCountRef.current,
+      );
+    } catch (err) {
+      const message =
+        err instanceof RouteError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Could not rebuild the nap route.';
+      setRecalcError(message);
+      showAlert({
+        title: 'Could not change route',
+        message: `${message}\n\nYou're still on the current path — try again when you have a signal.`,
+        tone: 'warning',
+      });
+    } finally {
+      recalculatingRef.current = false;
+      setChangingRoute(false);
+      setRecalculating(false);
+    }
+  }, [rebuildNapRouteFromHere, showAlert]);
 
   const handleTimerComplete = useCallback(async () => {
     if (headedHomeRef.current || recalculatingRef.current) return;
@@ -305,8 +399,8 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     setRecalcError(null);
 
     try {
-      const here = await getCurrentPosition();
-      const destination = resolveEndDestination(initialRoute, destinationLabel);
+      const here = await fetchCurrentPosition();
+      const destination = planEndDestination();
       const avoidHighways =
         activeStyle === 'no-highway' ||
         activeStyle === 'scenic' ||
@@ -340,14 +434,14 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
       setRecalcError(message);
       showAlert({
         title: 'Could not head to destination',
-        message: `${message}\n\nTap Open Maps to navigate manually.`,
+        message: `${message}\n\nStay on the nap map — we'll keep trying to route you home.`,
         tone: 'warning',
       });
     } finally {
       recalculatingRef.current = false;
       setRecalculating(false);
     }
-  }, [activeStyle, destinationLabel, initialRoute, showAlert]);
+  }, [activeStyle, initialRoute, planEndDestination, showAlert]);
 
   const handleTakeAlternativeRoute = useCallback(async () => {
     if (recalculatingRef.current) return;
@@ -358,14 +452,13 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
     setFindingAlt(true);
     setRecalculating(true);
     setRecalcError(null);
-    setSelectedAlertId(null);
 
     const baselineHazards = countSafetyHazards(currentAlerts);
     const maxAttempts = 3;
 
     try {
-      const here = await getCurrentPosition();
-      const destination = resolveEndDestination(initialRoute, destinationLabel);
+      const here = await fetchCurrentPosition();
+      const destination = planEndDestination();
       const remainingMinutes = Math.max(
         5,
         Math.ceil(secondsLeftRef.current / 60),
@@ -429,7 +522,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
                   homeOriginRef.current.lat,
                   homeOriginRef.current.lng,
                 )
-              : initialRoute.destination ?? destinationLabel,
+              : destination,
             extraStops: initialRoute.extraStops,
           };
         }
@@ -458,7 +551,7 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
         showAlert({
           title: 'Still near an unsafe area',
           message:
-            'Tried alternate paths, but a restricted area, crime, fire, or other incident may still be nearby. You can tap Alt route again or Open Maps to navigate around it.',
+            'Tried alternate paths, but a restricted area, crime, fire, or other incident may still be nearby. You can tap Alt route again to keep looking.',
           tone: 'danger',
         });
       }
@@ -480,48 +573,208 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
       setFindingAlt(false);
       setRecalculating(false);
     }
-  }, [activeStyle, destinationLabel, endPin, initialRoute, showAlert]);
-
-  const handleAlertPress = useCallback((alert: RouteAlert) => {
-    setSelectedAlertId(prev => (prev === alert.id ? null : alert.id));
-  }, []);
+  }, [activeStyle, endPin, initialRoute, planEndDestination, showAlert]);
 
   const handleSecondsLeftChange = useCallback((secondsLeft: number) => {
     secondsLeftRef.current = secondsLeft;
   }, []);
+
+  const handleToggleVoice = useCallback(() => {
+    setVoiceOn(prev => {
+      const next = !prev;
+      napNav.setVoice(next);
+      return next;
+    });
+  }, [napNav]);
+
+  const handleToggleSheet = useCallback(() => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setSheetCollapsed(prev => !prev);
+  }, []);
+
+  const lastPersistAtRef = useRef(0);
+  const mapsOpenedRef = useRef(mapsOpened);
+  mapsOpenedRef.current = mapsOpened;
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const durationRef = useRef(durationMinutes);
+  durationRef.current = durationMinutes;
+  const timerStateRef = useRef({
+    running: Boolean(initialEndsAt && initialEndsAt > Date.now()) || napStarted,
+    secondsLeft:
+      initialSecondsLeft ?? initialTotalSeconds ?? initialDuration * 60,
+    totalSeconds: initialTotalSeconds ?? initialDuration * 60,
+    endsAt: initialEndsAt ?? null,
+  });
+
+  const handleTimerStateChange = useCallback(
+    (state: {
+      running: boolean;
+      secondsLeft: number;
+      totalSeconds: number;
+      endsAt: number | null;
+    }) => {
+      secondsLeftRef.current = state.secondsLeft;
+      timerStateRef.current = state;
+      const started =
+        state.running ||
+        mapsOpenedRef.current ||
+        napStarted ||
+        state.secondsLeft < state.totalSeconds;
+      if (!started) return;
+      setTimerStarted(true);
+      const now = Date.now();
+      if (
+        state.running &&
+        now - lastPersistAtRef.current < 4000 &&
+        state.secondsLeft > 0
+      ) {
+        return;
+      }
+      lastPersistAtRef.current = now;
+      // Write storage only — skip session context so the nav map does not re-render.
+      void saveActiveNap({
+        route: routeRef.current,
+        destinationLabel,
+        destination: plannedDestRef.current,
+        plannedOrigin: homeOriginRef.current,
+        activeStyle,
+        mapsOpened: mapsOpenedRef.current || napStarted,
+        plannedMinutes: durationRef.current,
+        totalSeconds: state.totalSeconds,
+        endsAt: state.endsAt,
+        running: state.running,
+        secondsLeft: state.secondsLeft,
+        savedAt: now,
+      });
+    },
+    [activeStyle, destinationLabel, napStarted],
+  );
+
+  const persistCurrentRide = useCallback(async () => {
+    const state = timerStateRef.current;
+    const started =
+      state.running ||
+      mapsOpenedRef.current ||
+      napStarted ||
+      state.secondsLeft < state.totalSeconds;
+    if (!started) return;
+    await persist({
+      route: routeRef.current,
+      destinationLabel,
+      destination: plannedDestRef.current,
+      plannedOrigin: homeOriginRef.current,
+      activeStyle,
+      mapsOpened: mapsOpenedRef.current || napStarted,
+      plannedMinutes: durationRef.current,
+      totalSeconds: state.totalSeconds,
+      endsAt: state.endsAt,
+      running: state.running,
+      secondsLeft: state.secondsLeft,
+      savedAt: Date.now(),
+    });
+  }, [activeStyle, destinationLabel, napStarted, persist]);
+
+  const leaveNavigate = useCallback(() => {
+    void (async () => {
+      await napNav.stop();
+      await persistCurrentRide();
+      if (navigation.canGoBack()) {
+        navigation.goBack();
+        return;
+      }
+      navigation.replace('MainTabs');
+    })();
+  }, [navigation, persistCurrentRide]);
+
+  const confirmEndNap = useCallback(() => {
+    const state = timerStateRef.current;
+    const started =
+      state.running ||
+      mapsOpenedRef.current ||
+      napStarted ||
+      timerStarted ||
+      state.secondsLeft < state.totalSeconds;
+    if (!started) {
+      leaveNavigate();
+      return;
+    }
+    showAlert({
+      title: 'End this nap?',
+      message:
+        'Your current ride will stop. You can plan a new route after that.',
+      tone: 'danger',
+      buttons: [
+        { label: 'Keep riding', variant: 'ghost' },
+        {
+          label: 'End nap',
+          variant: 'primary',
+          onPress: () => {
+            void (async () => {
+              await napNav.stop();
+              await endSession();
+              if (navigation.canGoBack()) {
+                navigation.goBack();
+                return;
+              }
+              navigation.replace('MainTabs');
+            })();
+          },
+        },
+      ],
+    });
+  }, [endSession, leaveNavigate, napStarted, navigation, showAlert, timerStarted]);
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      leaveNavigate();
+      return true;
+    });
+    return () => sub.remove();
+  }, [leaveNavigate]);
+
+  useEffect(() => {
+    if (!napStarted && !mapsOpened) return;
+    void (async () => {
+      const current = await loadActiveNap();
+      if (!current) return;
+      await persist({
+        ...current,
+        route,
+        plannedMinutes: durationMinutes,
+        savedAt: Date.now(),
+      });
+    })();
+  }, [mapsOpened, napStarted, persist, route, durationMinutes]);
 
   return (
     <View style={styles.root}>
       <NapMap
         height="100%"
         origin={route.origin}
-        route={route}
+        route={napNav.usingNative ? route : displayRoute}
         destination={endPin}
         fullBleed
         showsUserLocation
-        followUser={!recalculating}
+        followUser={!recalculating && napNav.status !== 'active'}
+        navigation={napNav.usingNative}
+        liveLocation={followLiveLocation}
         loading={recalculating}
         loadingLabel={
           findingAlt
             ? 'Finding a clear route…'
-            : headingHome
-              ? 'Routing straight…'
-              : 'Updating your route…'
+            : changingRoute
+              ? 'Finding a new route…'
+              : headingHome
+                ? 'Routing straight…'
+                : 'Updating your route…'
         }
         error={recalcError}
-        alerts={alerts}
         snappedPath={snappedPath}
-        selectedAlertId={selectedAlertId}
-        onAlertPress={handleAlertPress}
       />
 
       <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
-        <Pressable
-          onPress={() => navigation.goBack()}
-          style={styles.backBtn}
-          accessibilityLabel="End navigation">
-          <Text style={styles.backText}>← End</Text>
-        </Pressable>
+        {!(napNav.usingNative) ? (
         <View style={styles.topMeta}>
           <Text style={styles.topTitle} numberOfLines={1}>
             {meta.emoji} {meta.label} · {route.durationText}
@@ -530,9 +783,11 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
             {recalculating
               ? findingAlt
                 ? 'Finding alternate route…'
-                : headingHome
-                  ? 'Clearing stops · routing straight…'
-                  : `Updating for ${durationMinutes} min nap…`
+                : changingRoute
+                  ? 'Finding a new route…'
+                  : headingHome
+                    ? 'Clearing stops · routing straight…'
+                    : `Updating for ${durationMinutes} min nap…`
               : headingHome
                 ? `Straight to ${destinationLabel || (initialRoute.isLoop ? 'home' : 'destination')}`
                 : route.isLoop
@@ -540,52 +795,36 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
                   : `To ${destinationLabel || 'your destination'}`}
           </Text>
         </View>
+        ) : (
+          <View style={{ flex: 1 }} />
+        )}
+        <Pressable
+          onPress={handleToggleVoice}
+          style={[styles.voiceBtn, voiceOn && styles.voiceBtnOn]}
+          accessibilityRole="button"
+          accessibilityLabel={
+            voiceOn ? 'Mute route voice-over' : 'Unmute route voice-over'
+          }>
+          <Text style={styles.voiceBtnText}>{voiceOn ? '🔊' : '🔇'}</Text>
+        </Pressable>
+        {timerStarted || mapsOpened || napStarted ? (
+          <Pressable
+            onPress={confirmEndNap}
+            style={styles.endBtn}
+            accessibilityLabel="End nap">
+            <Text style={styles.endBtnText}>End</Text>
+          </Pressable>
+        ) : null}
       </View>
 
-      {selectedAlert && (
-        <View style={[styles.callout, { top: insets.top + 64 }]}>
-          <Text style={styles.calloutTitle} numberOfLines={1}>
-            {`${hazardLabel(selectedAlert.kind)} · ${selectedAlert.title}`}
-          </Text>
-          <Text style={styles.calloutBody} numberOfLines={2}>
-            {selectedAlert.message}
-          </Text>
-          <View style={styles.calloutActions}>
-            <Pressable
-              onPress={handleTakeAlternativeRoute}
-              disabled={recalculating}
-              style={[
-                styles.calloutAltBtn,
-                recalculating && styles.calloutAltBtnDisabled,
-              ]}>
-              <Text style={styles.calloutAltBtnText}>
-                {findingAlt ? 'Finding…' : 'Take alt route'}
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setSelectedAlertId(null)}
-              hitSlop={8}
-              style={styles.calloutDismiss}>
-              <Text style={styles.calloutDismissText}>Dismiss</Text>
-            </Pressable>
-          </View>
-        </View>
-      )}
-
       <View style={[styles.timerOverlay, { paddingBottom: insets.bottom + 12 }]}>
-        {alerts.length > 0 && (
+        {/* {alerts.length > 0 && (
           <View style={styles.alertBanner}>
-            <Pressable
-              style={styles.alertBannerMain}
-              onPress={() => {
-                const first =
-                  alerts.find(isSafetyHazard) ?? alerts[0];
-                setSelectedAlertId(first.id);
-              }}>
+            <View style={styles.alertBannerMain}>
               <Text style={styles.alertBannerText} numberOfLines={2}>
                 {alertBannerText(alerts)}
               </Text>
-            </Pressable>
+            </View>
             <Pressable
               onPress={handleTakeAlternativeRoute}
               disabled={recalculating}
@@ -599,139 +838,101 @@ export default function NavigateScreen({ navigation, route: navRoute }: Navigate
               </Text>
             </Pressable>
           </View>
-        )}
+        )} */}
         {(recalculating || headingHome) && (
           <View style={styles.overlayHint}>
             <Text style={styles.overlayHintText}>
               {recalculating
                 ? findingAlt
                   ? 'Finding an alternate route around the unsafe area…'
-                  : headingHome
-                    ? 'Nap over — removing remaining stops and routing straight…'
-                    : 'Recalculating nap route for the extended time…'
-                : 'Nap over · route updated straight to your destination — tap Open Maps'}
+                  : changingRoute
+                    ? 'Finding a new nap route from where you are…'
+                    : headingHome
+                      ? 'Nap over — removing remaining stops and routing straight…'
+                      : 'Recalculating nap route for the extended time…'
+                : 'Nap over · routing straight to your destination'}
             </Text>
           </View>
         )}
-        {navActive && currentNavStep && (
+        {/* {(napNav.hint ||
+          napNav.error ||
+          napNav.snapshot?.offRoute ||
+          napNav.snapshot?.rerouting) &&
+          !recalculating && (
+          <View style={styles.overlayHint}>
+            <Text style={styles.overlayHintText}>
+              {napNav.snapshot?.rerouting
+                ? 'Off route — requesting a new path…'
+                : napNav.snapshot?.offRoute
+                  ? 'Off the nap route — hold the wheel, rerouting'
+                  : napNav.hint || napNav.error}
+            </Text>
+          </View>
+        )} */}
+        {navActive && napNav.snapshot && !napNav.usingNative && !sheetCollapsed && (
           <View style={styles.navPanel}>
             <View style={styles.navHeader}>
               <View style={styles.navIcon}>
                 <Text style={{ fontSize: 22 }}>
-                  {dirIcon(currentNavStep.instruction)}
+                  {dirIcon(napNav.snapshot.instruction || napNav.snapshot.maneuver)}
                 </Text>
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.navInstruction} numberOfLines={2}>
-                  {currentNavStep.instruction}
+                  {napNav.snapshot.instruction || 'Continue on the nap route'}
                 </Text>
                 <Text style={styles.navMeta}>
-                  {currentNavStep.distance} · {currentNavStep.duration}
+                  {formatMeters(napNav.snapshot.maneuverDistanceMeters)} to turn
+                  {' · '}
+                  ETA {formatEtaSeconds(napNav.snapshot.remainingSeconds)}
+                  {' · '}
+                  {formatMeters(napNav.snapshot.remainingMeters)} left
                 </Text>
               </View>
-              <Pressable
-                onPress={() => setNavExpanded(v => !v)}
-                style={styles.navSmallBtn}
-                accessibilityLabel={
-                  navExpanded ? 'Collapse directions' : 'Expand directions'
-                }>
-                <Text style={styles.navSmallBtnText}>
-                  {navExpanded ? '▾' : '▴'}
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => {
-                  setNavActive(false);
-                  setNavStep(0);
-                  setNavExpanded(false);
-                }}
-                style={styles.navSmallBtn}
-                accessibilityLabel="Close directions">
-                <Text style={styles.navSmallBtnText}>✕</Text>
-              </Pressable>
             </View>
-            {navExpanded && (
-              <ScrollView style={styles.navStepList}>
-                {allNavSteps.map((step, i) => (
-                  <Pressable
-                    key={`${step.instruction}-${i}`}
-                    onPress={() => setNavStep(i)}
-                    style={[
-                      styles.stepRow,
-                      i === safeNavStep && styles.stepRowActive,
-                    ]}>
-                    <Text style={styles.stepIcon}>
-                      {dirIcon(step.instruction)}
-                    </Text>
-                    <View style={{ flex: 1 }}>
-                      <Text
-                        style={[
-                          styles.stepText,
-                          i === safeNavStep && styles.stepTextActive,
-                        ]}>
-                        {step.instruction}
-                      </Text>
-                      <Text style={styles.stepDist}>{step.distance}</Text>
-                    </View>
-                  </Pressable>
-                ))}
-              </ScrollView>
-            )}
-            <View style={styles.navControls}>
-              <Pressable
-                onPress={() => setNavStep(s => Math.max(0, s - 1))}
-                disabled={safeNavStep === 0}
-                style={[
-                  styles.navCtrlBtn,
-                  safeNavStep === 0 && styles.navCtrlDisabled,
-                ]}>
-                <Text style={styles.navCtrlText}>← Prev</Text>
-              </Pressable>
-              <Text style={styles.navCount}>
-                {safeNavStep + 1} / {allNavSteps.length}
+            <View style={styles.navLiveRow}>
+              <Text style={styles.navLiveText}>
+                {napNav.snapshot.finalDestination
+                  ? napNav.snapshot.destinationTitle
+                  : `Next checkpoint · ${napNav.snapshot.destinationTitle}`}
               </Text>
-              <Pressable
-                onPress={() =>
-                  setNavStep(s => Math.min(allNavSteps.length - 1, s + 1))
-                }
-                disabled={safeNavStep === allNavSteps.length - 1}
-                style={[
-                  styles.navCtrlBtn,
-                  styles.navCtrlPrimary,
-                  safeNavStep === allNavSteps.length - 1 &&
-                    styles.navCtrlDisabled,
-                ]}>
-                <Text style={styles.navCtrlPrimaryText}>Next →</Text>
-              </Pressable>
+              {napNav.usingNative ? (
+                <Text style={styles.navLiveVoice}>
+                  {voiceOn ? 'Voice on' : 'Voice muted'}
+                </Text>
+              ) : (
+                <Text style={styles.navLiveVoice}>GPS guide</Text>
+              )}
             </View>
           </View>
         )}
-        {!navActive && allNavSteps.length > 0 && (
-          <Pressable
-            onPress={() => {
-              setNavActive(true);
-              setNavExpanded(false);
-            }}
-            style={styles.directionsBtn}
-            accessibilityLabel="View directions">
-            <Text style={styles.directionsBtnText}>View directions</Text>
-          </Pressable>
-        )}
         <NapTimer
           variant="overlay"
-          autoStart={napStarted}
+          collapsed={sheetCollapsed}
+          onToggleCollapsed={handleToggleSheet}
+          autoStart={napStarted && (initialEndsAt != null || initialSecondsLeft == null)}
           durationMinutes={initialDuration}
+          initialEndsAt={initialEndsAt}
+          initialTotalSeconds={initialTotalSeconds}
+          initialSecondsLeft={initialSecondsLeft}
           alertAtMinutes={settings.notifyAtMinutes}
           alertsEnabled={settings.notificationsEnabled}
-          onDismiss={() => navigation.goBack()}
+          onDismiss={leaveNavigate}
+          backAction={{ onPress: leaveNavigate }}
           onExtend={handleExtend}
+          changeRouteAction={{
+            onPress: handleChangeRoute,
+            busy: changingRoute,
+            disabled: recalculating || headingHome,
+          }}
           onComplete={handleTimerComplete}
           onSecondsLeftChange={handleSecondsLeftChange}
+          onTimerStateChange={handleTimerStateChange}
           beginAction={{
             idleLabel: 'Begin Nap',
-            activeLabel: 'Open Maps',
-            active: mapsOpened || napStarted,
-            onPress: handleOpenMaps,
+            activeLabel: 'Navigating',
+            active: mapsOpened || napStarted || napNav.status === 'active',
+            onPress: handleStartNavigation,
           }}
         />
       </View>
@@ -755,18 +956,35 @@ function makeStyles(colors: ColorPalette) {
     alignItems: 'center',
     gap: 10,
   },
-  backBtn: {
+  voiceBtn: {
+    backgroundColor: colors.overlay,
+    borderRadius: 999,
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: colors.lavenderBorder,
+  },
+  voiceBtnOn: {
+    borderColor: colors.gold,
+    backgroundColor: colors.goldSoft,
+  },
+  voiceBtnText: {
+    fontSize: 16,
+  },
+  endBtn: {
     backgroundColor: colors.overlay,
     borderRadius: 999,
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderWidth: 1.5,
-    borderColor: colors.lavenderBorder,
+    borderColor: colors.dangerSoft,
   },
-  backText: {
+  endBtnText: {
     fontSize: 13,
     fontWeight: '800',
-    color: colors.purple,
+    color: colors.danger,
   },
   topMeta: {
     flex: 1,
@@ -786,57 +1004,6 @@ function makeStyles(colors: ColorPalette) {
     fontSize: 11,
     color: colors.purpleMuted,
     marginTop: 2,
-  },
-  callout: {
-    position: 'absolute',
-    left: 12,
-    right: 12,
-    backgroundColor: colors.overlay,
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderWidth: 1.5,
-    borderColor: colors.dangerSoft,
-    gap: 2,
-  },
-  calloutTitle: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.danger,
-  },
-  calloutBody: {
-    fontSize: 11,
-    color: colors.purpleMuted,
-  },
-  calloutActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 8,
-    gap: 10,
-  },
-  calloutAltBtn: {
-    backgroundColor: colors.primary,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-  },
-  calloutAltBtnDisabled: {
-    opacity: 0.55,
-  },
-  calloutAltBtnText: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: colors.onPrimary,
-  },
-  calloutDismiss: {
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-  },
-  calloutDismissText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.purple,
   },
   timerOverlay: {
     position: 'absolute',
@@ -941,6 +1108,26 @@ function makeStyles(colors: ColorPalette) {
     color: colors.onPrimary,
     fontSize: 11,
     marginTop: 2,
+  },
+  navLiveRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: colors.lavenderBorder,
+  },
+  navLiveText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.purple,
+  },
+  navLiveVoice: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: colors.purpleMuted,
   },
   navSmallBtn: {
     backgroundColor: 'rgba(255,255,255,0.18)',

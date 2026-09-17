@@ -106,8 +106,10 @@ export async function mockFindRoutes(params: {
   // Simulate network latency
   await new Promise<void>(r => setTimeout(r, 900));
 
-  const styles: RouteStyleId[] = ['highway', 'no-highway', 'scenic', 'fewer-lights'];
-  const routes = styles.map(id => buildMockRoute(id, params.durationMinutes, params.destination, params.extraStops));
+  const styles: RouteStyleId[] = [params.preferredStyle];
+  const routes = styles.map(id =>
+    buildMockRoute(id, params.durationMinutes, params.destination, params.extraStops),
+  );
 
   const variants: RouteVariant[] = styles.map((id, i) => {
     const route = routes[i];
@@ -115,6 +117,7 @@ export async function mockFindRoutes(params: {
     const meta = ROUTE_TYPE_META[id];
     return {
       id,
+      variation: i,
       emoji: meta.emoji,
       label: meta.label,
       sublabel: meta.sublabel,
@@ -126,13 +129,8 @@ export async function mockFindRoutes(params: {
     };
   });
 
-  let activeStyle = params.preferredStyle;
-  let primary = routes[styles.indexOf(activeStyle)];
-  if (!primary) {
-    const best = [...variants].sort((a, b) => b.napMatchScore - a.napMatchScore)[0];
-    activeStyle = best.id;
-    primary = routes[styles.indexOf(activeStyle)];
-  }
+  const activeStyle = params.preferredStyle;
+  const primary = routes[0];
 
   return { variants, primary, activeStyle };
 }

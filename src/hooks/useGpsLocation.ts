@@ -16,6 +16,29 @@ async function ensureAndroidPermission(): Promise<boolean> {
   return granted === PermissionsAndroid.RESULTS.GRANTED;
 }
 
+export function fetchCurrentPosition(): Promise<{ lat: number; lng: number }> {
+  return new Promise(async (resolve, reject) => {
+    const ok = await ensureAndroidPermission();
+    if (!ok) {
+      reject(new Error('Location access denied'));
+      return;
+    }
+    Geolocation.getCurrentPosition(
+      pos =>
+        resolve({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        }),
+      err => reject(err),
+      {
+        timeout: 12000,
+        maximumAge: 8000,
+        enableHighAccuracy: true,
+      },
+    );
+  });
+}
+
 export function useGpsLocation() {
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [status, setStatus] = useState<'idle' | 'detecting' | 'found' | 'error'>('idle');

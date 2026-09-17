@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -8,7 +8,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import ActiveRideBanner from '../components/ActiveRideBanner';
 import GradientBackground from '../components/GradientBackground';
 import NapMap from '../components/NapMap';
 import PlacesAutocomplete from '../components/PlacesAutocomplete';
@@ -18,9 +20,11 @@ import {
   type SavedPlace,
   useNapSettings,
 } from '../context/SettingsContext';
+import { useNapSession } from '../context/NapSessionContext';
 import { useGpsLocation } from '../hooks/useGpsLocation';
 import { geocodeAddress, reverseGeocode } from '../services/geocode';
 import { findRouteSuggestions, RouteError } from '../services/mapsApi';
+import { navigateParamsFromSession } from '../services/napSession';
 import type { RouteStyleId } from '../types/route';
 import { useTheme, type ColorPalette } from '../theme/ThemeContext';
 import type { PlanScreenProps } from '../navigation/types';
@@ -45,6 +49,7 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const { settings } = useNapSettings();
+  const { session, refresh: refreshSession } = useNapSession();
   const {
     location: gpsLocation,
     status: gpsStatus,
@@ -79,6 +84,12 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
   useEffect(() => {
     detectGps();
   }, [detectGps]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshSession();
+    }, [refreshSession]),
+  );
 
   useEffect(() => {
     setSelectedDuration(settings.defaultDuration || 30);
@@ -185,6 +196,10 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
   };
 
   const handleFindRoute = async () => {
+    if (session) {
+      setError('End your current nap before planning a new route.');
+      return;
+    }
     if (!gpsLocation) {
       setError(
         gpsStatus === 'error'
@@ -218,8 +233,14 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
           : `${endLocation.lat},${endLocation.lng}`;
       const originStr = `${gpsLocation.lat},${gpsLocation.lng}`;
 
-      const { variants, primary, activeStyle, restrictedOptions } =
-        await findRouteSuggestions({
+      const {
+        variants,
+        primary,
+        activeStyle,
+        activeVariation,
+        routesByVariation,
+        restrictedOptions,
+      } = await findRouteSuggestions({
         origin: originStr,
         durationMinutes: activeDuration,
         destination,
@@ -227,13 +248,19 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
         extraStops: [],
         refreshIndex: 0,
       });
-      setActiveRoute(activeStyle);
       navigation.navigate('Results', {
         route: primary,
         variants,
         activeStyle,
+        activeVariation,
+        routesByVariation,
         durationMinutes: activeDuration,
-        destination: destination ? endLabel || destination : null,
+        destination,
+        destinationLabel:
+          endMode === 'current' || !endLocation
+            ? null
+            : endLabel || destination,
+        origin: gpsLocation,
         preferredStyle: activeRoute,
         originLabel: 'Current location',
         restrictedOptions,
@@ -281,6 +308,18 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
 
         <Text style={styles.srOnly}>Naps — GPS Nap-Drive Route Planner</Text>
         <Text style={styles.tagline}>Find a loop that matches the nap</Text>
+
+        {session ? (
+          <ActiveRideBanner
+            session={session}
+            onResume={() =>
+              navigation.navigate(
+                'Navigate',
+                navigateParamsFromSession(session),
+              )
+            }
+          />
+        ) : null}
 
         {/* Starting point */}
         <View style={styles.card}>
@@ -541,15 +580,17 @@ export default function PlanScreen({ navigation }: PlanScreenProps) {
         {/* CTA */}
         <Pressable
           onPress={handleFindRoute}
-          disabled={loading}
-          style={[styles.cta, loading && { opacity: 0.6 }]}>
+          disabled={loading || !!session}
+          style={[styles.cta, (loading || session) && { opacity: 0.6 }]}>
           {loading ? (
             <View style={styles.ctaInner}>
               <ActivityIndicator color={colors.onPrimary} />
               <Text style={styles.ctaText}>Finding your route…</Text>
             </View>
           ) : (
-            <Text style={styles.ctaText}>Find My Route →</Text>
+            <Text style={styles.ctaText}>
+              {session ? 'End current nap to plan a new route' : 'Find My Route →'}
+            </Text>
           )}
         </Pressable>
         {error && <Text style={styles.error}>{error}</Text>}
@@ -575,9 +616,9 @@ function makeStyles(colors: ColorPalette) {
       marginBottom: 8,
     },
     brandRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-    logoEmoji: { fontSize: 22 },
+    logoEmoji: { fontSize: 24 },
     brand: {
-      fontSize: 22,
+      fontSize: 24,
       fontWeight: '800',
       color: colors.purple,
       letterSpacing: -0.5,
@@ -590,12 +631,12 @@ function makeStyles(colors: ColorPalette) {
       borderWidth: 1.5,
       borderColor: colors.lavenderBorder,
     },
-    linkText: { fontSize: 13, fontWeight: '600', color: colors.purpleMuted },
+    linkText: { fontSize: 16, fontWeight: '600', color: colors.purpleMuted },
     srOnly: { position: 'absolute', width: 1, height: 1, opacity: 0 },
     tagline: {
       textAlign: 'center',
       color: colors.purpleMuted,
-      fontSize: 13,
+      fontSize: 16,
       marginBottom: 14,
       fontWeight: '500',
     },
@@ -614,7 +655,7 @@ function makeStyles(colors: ColorPalette) {
       elevation: 3,
     },
     label: {
-      fontSize: 12,
+      fontSize: 16,
       fontWeight: '700',
       color: colors.lavenderSoft,
       letterSpacing: 0.8,
@@ -635,7 +676,7 @@ function makeStyles(colors: ColorPalette) {
       backgroundColor: colors.primary,
       borderColor: colors.primary,
     },
-    toggleText: { fontSize: 12, fontWeight: '600', color: colors.purple },
+    toggleText: { fontSize: 16, fontWeight: '600', color: colors.purple },
     toggleTextActive: { color: colors.onPrimary },
     input: {
       backgroundColor: colors.inputBg,
@@ -645,7 +686,7 @@ function makeStyles(colors: ColorPalette) {
       paddingHorizontal: 14,
       paddingVertical: 12,
       color: colors.purple,
-      fontSize: 14,
+      fontSize: 16,
       marginBottom: 4,
     },
     mapBlock: { gap: 10 },
@@ -655,7 +696,7 @@ function makeStyles(colors: ColorPalette) {
       justifyContent: 'space-between',
     },
     refreshLink: {
-      fontSize: 13,
+      fontSize: 16,
       fontWeight: '600',
       color: colors.purple,
     },
@@ -676,14 +717,14 @@ function makeStyles(colors: ColorPalette) {
       alignItems: 'center',
       gap: 10,
     },
-    gpsText: { flex: 1, fontSize: 13, color: colors.purpleMuted },
+    gpsText: { flex: 1, fontSize: 16, color: colors.purpleMuted },
     readyPill: {
       backgroundColor: 'rgba(100,200,100,0.2)',
       paddingHorizontal: 8,
       paddingVertical: 2,
       borderRadius: 999,
     },
-    readyText: { fontSize: 11, color: colors.success, fontWeight: '600' },
+    readyText: { fontSize: 16, color: colors.success, fontWeight: '600' },
     endStatusRow: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -691,7 +732,7 @@ function makeStyles(colors: ColorPalette) {
       marginTop: 6,
     },
     endReady: {
-      fontSize: 12,
+      fontSize: 16,
       color: colors.success,
       fontWeight: '600',
       marginTop: 8,
@@ -708,7 +749,7 @@ function makeStyles(colors: ColorPalette) {
       maxWidth: 160,
     },
     savedChipText: {
-      fontSize: 12,
+      fontSize: 16,
       fontWeight: '600',
       color: colors.ink,
     },
@@ -729,7 +770,7 @@ function makeStyles(colors: ColorPalette) {
       marginBottom: 6,
     },
     verifyAddress: {
-      fontSize: 13,
+      fontSize: 16,
       fontWeight: '600',
       color: colors.purple,
       marginBottom: 12,
@@ -749,7 +790,7 @@ function makeStyles(colors: ColorPalette) {
       borderColor: colors.lavenderBorder,
     },
     verifyCancelText: {
-      fontSize: 13,
+      fontSize: 16,
       fontWeight: '600',
       color: colors.purpleMuted,
     },
@@ -761,13 +802,13 @@ function makeStyles(colors: ColorPalette) {
       backgroundColor: colors.primary,
     },
     verifyConfirmText: {
-      fontSize: 13,
+      fontSize: 16,
       fontWeight: '700',
       color: colors.onPrimary,
     },
-    hint: { fontSize: 11, color: colors.lavenderSoft, marginTop: 6 },
+    hint: { fontSize: 16, color: colors.lavenderSoft, marginTop: 6 },
     subhint: {
-      fontSize: 11,
+      fontSize: 16,
       color: colors.lavenderSoft,
       marginTop: -6,
       marginBottom: 10,
@@ -785,7 +826,7 @@ function makeStyles(colors: ColorPalette) {
       backgroundColor: colors.gold,
       borderColor: colors.gold,
     },
-    pillText: { fontSize: 13, fontWeight: '600', color: colors.purple },
+    pillText: { fontSize: 16, fontWeight: '600', color: colors.purple },
     pillTextActive: { fontWeight: '700', color: colors.ink },
     customRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     customToggle: {
@@ -800,8 +841,8 @@ function makeStyles(colors: ColorPalette) {
       backgroundColor: colors.goldSoft,
       borderColor: colors.gold,
     },
-    customToggleText: { fontSize: 13, fontWeight: '600', color: colors.purple },
-    minLabel: { fontSize: 13, color: colors.lavenderSoft },
+    customToggleText: { fontSize: 16, fontWeight: '600', color: colors.purple },
+    minLabel: { fontSize: 16, color: colors.lavenderSoft },
     grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
     routeTile: {
       width: '48%',
@@ -818,9 +859,9 @@ function makeStyles(colors: ColorPalette) {
       backgroundColor: colors.goldSoft,
       borderColor: colors.gold,
     },
-    routeEmoji: { fontSize: 18 },
-    routeLabel: { fontSize: 13, color: colors.purple, fontWeight: '500' },
-    routeSub: { fontSize: 10, color: colors.lavenderSoft, marginTop: 2 },
+    routeEmoji: { fontSize: 22 },
+    routeLabel: { fontSize: 16, color: colors.purple, fontWeight: '500' },
+    routeSub: { fontSize: 14, color: colors.lavenderSoft, marginTop: 2 },
     cta: {
       backgroundColor: colors.primary,
       borderRadius: 999,
@@ -834,23 +875,23 @@ function makeStyles(colors: ColorPalette) {
       elevation: 4,
     },
     ctaInner: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-    ctaText: { color: colors.onPrimary, fontSize: 16, fontWeight: '700' },
+    ctaText: { color: colors.onPrimary, fontSize: 18, fontWeight: '700' },
     error: {
       textAlign: 'center',
       color: colors.error,
       fontWeight: '600',
-      fontSize: 13,
+      fontSize: 16,
       marginTop: 10,
     },
     footerHint: {
       textAlign: 'center',
       color: colors.footerHint,
-      fontSize: 12,
+      fontSize: 14,
       marginTop: 10,
     },
     mockBadge: {
       textAlign: 'center',
-      fontSize: 11,
+      fontSize: 14,
       color: colors.lavenderSoft,
       marginTop: 8,
       fontWeight: '600',
