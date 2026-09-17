@@ -56,16 +56,65 @@ jest.mock('react-native-haptic-feedback', () => ({
   default: { trigger: jest.fn() },
 }));
 
-jest.mock('react-native-maps', () => {
+jest.mock('@sayem314/react-native-keep-awake', () => ({
+  activateKeepAwake: jest.fn(),
+  deactivateKeepAwake: jest.fn(),
+  useKeepAwake: jest.fn(),
+  default: () => null,
+}));
+
+jest.mock('react-native-webview', () => {
   const React = require('react');
   const { View } = require('react-native');
-  const Mock = (props: object) => React.createElement(View, props);
   return {
     __esModule: true,
-    default: Mock,
-    Marker: Mock,
-    Polyline: Mock,
-    PROVIDER_GOOGLE: 'google',
+    default: View,
+    WebView: View,
+  };
+});
+
+jest.mock('@googlemaps/react-native-navigation-sdk', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  const Mock = (props: { children?: React.ReactNode }) =>
+    React.createElement(View, props, props.children);
+  return {
+    __esModule: true,
+    NavigationProvider: ({ children }: { children?: React.ReactNode }) =>
+      React.createElement(React.Fragment, null, children),
+    NavigationView: Mock,
+    MapView: Mock,
+    TaskRemovedBehavior: { CONTINUE_SERVICE: 0, QUIT_SERVICE: 1 },
+    MapColorScheme: { FOLLOW_SYSTEM: 0, LIGHT: 1, DARK: 2 },
+    NavigationNightMode: { AUTO: 0, FORCE_DAY: 1, FORCE_NIGHT: 2 },
+    NavigationUIEnabledPreference: { AUTOMATIC: 0, DISABLED: 1 },
+    AudioGuidance: { SILENT: 0, VIBRATION: 1, VOICE_ALERTS_AND_GUIDANCE: 4, BLUETOOTH_AUDIO: 8 },
+    TravelMode: { DRIVING: 0 },
+    RouteStatus: { OK: 'OK' },
+    NavigationSessionStatus: { OK: 'ok' },
+    useNavigation: () => ({
+      navigationController: {
+        areTermsAccepted: jest.fn(() => Promise.resolve(true)),
+        init: jest.fn(() => Promise.resolve('ok')),
+        startUpdatingLocation: jest.fn(() => Promise.resolve()),
+        stopUpdatingLocation: jest.fn(),
+        setBackgroundLocationUpdatesEnabled: jest.fn(),
+        setDestinations: jest.fn(() => Promise.resolve('OK')),
+        startGuidance: jest.fn(() => Promise.resolve()),
+        stopGuidance: jest.fn(() => Promise.resolve()),
+        clearDestinations: jest.fn(() => Promise.resolve()),
+        setAudioGuidanceType: jest.fn(),
+        showTermsAndConditionsDialog: jest.fn(() => Promise.resolve(true)),
+        continueToNextDestination: jest.fn(() => Promise.resolve({})),
+      },
+      setOnArrival: jest.fn(),
+      setOnLocationChanged: jest.fn(),
+      setOnRouteChanged: jest.fn(),
+      setOnReroutingRequestedByOffRoute: jest.fn(),
+      setOnRemainingTimeOrDistanceChanged: jest.fn(),
+      setOnTurnByTurn: jest.fn(),
+      removeAllListeners: jest.fn(),
+    }),
   };
 });
 

@@ -1,6 +1,7 @@
 /**
  * Loaded from `.env` via react-native-config (never commit the real key).
  * Restrict this key in Google Cloud Console to:
+ * - Navigation SDK for Android / iOS (in-app turn-by-turn + spoken guidance)
  * - Maps SDK for Android (package com.snaps.app)
  * - Maps SDK for iOS (bundle id com.naps.app)
  * - Routes API (preferred for traffic-aware ETAs)

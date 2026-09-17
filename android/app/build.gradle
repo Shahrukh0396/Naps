@@ -83,12 +83,17 @@ android {
         applicationId "com.snaps.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 3
+        versionCode 5
         versionName "1.1.0"
         resValue "string", "google_maps_api_key", (project.env.get("GOOGLE_MAPS_API_KEY") ?: "")
     }
     buildFeatures {
         buildConfig true
+    }
+    compileOptions {
+        coreLibraryDesugaringEnabled true
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
     signingConfigs {
         debug {
@@ -112,9 +117,24 @@ android {
     }
 }
 
+// Navigation SDK already ships Maps SDK classes. Exclude the standalone
+// play-services-maps AAR (from react-native-maps) so we do not duplicate
+// com.google.android.gms.maps.* . Official MapView/NavigationView from
+// @googlemaps/react-native-navigation-sdk 0.16.3 also uses Nav SDK 7.6.1.
+configurations.configureEach {
+    exclude group: 'com.google.android.gms', module: 'play-services-maps'
+    resolutionStrategy {
+        force 'com.google.android.libraries.navigation:navigation:7.6.1'
+    }
+}
+
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    // 7.7+ requires AGP 8.13.2; RN 0.86 ships AGP 8.12.0. 7.6.1 still has
+    // Navigator, voice guidance, checkpoints, and turn-by-turn.
+    implementation("com.google.android.libraries.navigation:navigation:7.6.1")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")

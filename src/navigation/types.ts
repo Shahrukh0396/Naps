@@ -19,7 +19,10 @@ export type RootStackParamList = {
     activeVariation?: number;
     routesByVariation?: Record<number, RouteResult>;
     durationMinutes: number;
+    /** lat,lng from Plan, or null when the end is a loop back to start. */
     destination: string | null;
+    destinationLabel?: string | null;
+    origin: { lat: number; lng: number };
     originLabel: string;
     preferredStyle: RouteStyleId;
     restrictedOptions?: RestrictedRouteOption[];
@@ -28,6 +31,9 @@ export type RootStackParamList = {
     route: RouteResult;
     durationMinutes: number;
     destinationLabel: string | null;
+    /** Plan-screen end as lat,lng, or null for a loop. */
+    destination?: string | null;
+    plannedOrigin?: { lat: number; lng: number };
     activeStyle: RouteStyleId;
     /** True when Results already opened Google Maps and started the nap. */
     napStarted?: boolean;

@@ -7,12 +7,14 @@ import React, {
   useState,
 } from 'react';
 import { AppState } from 'react-native';
+import { stopNativeNavigation } from '../services/napNavigation';
 import {
   endActiveNap,
   loadActiveNap,
   saveActiveNap,
   type ActiveNapSession,
 } from '../services/napSession';
+import { useKeepAwakeWhile } from '../hooks/useKeepAwake';
 
 interface NapSessionContextValue {
   session: ActiveNapSession | null;
@@ -30,6 +32,10 @@ const NapSessionContext = createContext<NapSessionContextValue>({
 
 export function NapSessionProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<ActiveNapSession | null>(null);
+  const rideInProgress = Boolean(
+    session && (session.running || session.mapsOpened),
+  );
+  useKeepAwakeWhile(rideInProgress);
 
   const refresh = useCallback(async () => {
     const next = await loadActiveNap();
@@ -44,6 +50,7 @@ export function NapSessionProvider({ children }: { children: React.ReactNode }) 
 
   const endSession = useCallback(async () => {
     setSession(null);
+    await stopNativeNavigation();
     await endActiveNap();
   }, []);
 

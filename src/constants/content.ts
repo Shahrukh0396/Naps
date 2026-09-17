@@ -57,8 +57,8 @@ export const SUPPORT_FAQS = [
     a: 'No. Location is used only to calculate routes in the moment and is not stored or shared.',
   },
   {
-    q: 'Can I open the route in Google Maps?',
-    a: 'Yes. On the route screen, tap Begin Nap — that opens the selected route in the Google Maps app first, then starts the nap timer. The timer keeps running while you navigate in Maps and will still alert you if Naps is in the background. View more details opens the nap map without leaving the app. Extend updates the route while the timer stays in Naps.',
+    q: 'What if i want to change my route while i am driving?',
+    a: 'Use Change route on the nap timer at any time. Naps rebuilds a new path from your current location to the destination you picked on Plan, using the same nap length and route style. The timer keeps running. Before you start driving, Refresh on the results screen loads a new set of same-style suggestions if you want a different loop first.',
   },
   {
     q: 'What is the nap timer for?',
